@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Cascader, Spin, Popover, Input } from "antd";
+import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Popover, Input } from "antd";
 import { EnvironmentOutlined, FullscreenOutlined, GlobalOutlined, CarOutlined, RadarChartOutlined, AimOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
 import MapContainer from "@/components/Map/MapContainer";
 import MarkerLayer from "@/components/Map/MarkerLayer"; // 导入标记层组件
@@ -29,6 +29,53 @@ import { RouteServiceStatus, RouteStrategy } from "@/types";
 import RoutePlanningForm, { RoutePlanningParams } from '@/components/Map/RoutePlanningForm';
 import RouteDetailsPanel from '@/components/Map/RouteDetailsPanel';
 import RouteLayer from '@/components/Map/RouteLayer';
+
+// 城市数据（按字母分组）
+import { CITIES_BY_LETTER, LETTERS, ALL_CITIES, searchCities, type CityData } from '@/data/cities';
+
+// 热门城市（展示在顶部快速选择区域）
+const HOT_CITY_NAMES = ['北京', '上海', '广州', '深圳', '杭州', '南京', '成都', '重庆', '武汉', '西安'];
+
+// 省份映射（根据 adcode 前两位划分）
+const PROVINCE_CODE_MAP: Record<string, string> = {
+  '11': '北京',
+  '12': '天津',
+  '13': '河北',
+  '14': '山西',
+  '15': '内蒙古',
+  '21': '辽宁',
+  '22': '吉林',
+  '23': '黑龙江',
+  '31': '上海',
+  '32': '江苏',
+  '33': '浙江',
+  '34': '安徽',
+  '35': '福建',
+  '36': '江西',
+  '37': '山东',
+  '41': '河南',
+  '42': '湖北',
+  '43': '湖南',
+  '44': '广东',
+  '45': '广西',
+  '46': '海南',
+  '50': '重庆',
+  '51': '四川',
+  '52': '贵州',
+  '53': '云南',
+  '54': '西藏',
+  '61': '陕西',
+  '62': '甘肃',
+  '63': '青海',
+  '64': '宁夏',
+  '65': '新疆',
+};
+
+type ProvinceGroup = {
+  code: string;
+  name: string;
+  cities: CityData[];
+};
 
 const MapPlayground: React.FC = () => {
   // 页面加载时的初始化
@@ -261,16 +308,18 @@ const MapPlayground: React.FC = () => {
   const [showSatelliteMode, setShowSatelliteMode] = useState<boolean>(false);
   const [showSatelliteRoads, setShowSatelliteRoads] = useState<boolean>(false);
   const prevMapTypeRef = useRef<'normal' | 'satellite' | '3d'>('normal');
-  // 城市级联选择数据
-  const [cascaderOptions, setCascaderOptions] = useState<any[]>([]);
-  const [cascaderLoading, setCascaderLoading] = useState<boolean>(false);
   // 城市弹窗状态与搜索
   const [showCityDropdown, setShowCityDropdown] = useState<boolean>(false);
+  const [cityTab, setCityTab] = useState<'city' | 'province'>('city');
   const [citySearchQuery, setCitySearchQuery] = useState<string>('');
+  const [citySearchResults, setCitySearchResults] = useState<CityData[]>([]);
+  const [activeLetter, setActiveLetter] = useState<string>('S');
   const [currentCity, setCurrentCity] = useState<string>('深圳');
   const [currentCityAdcode, setCurrentCityAdcode] = useState<string | null>(null);
   const [weatherLoading, setWeatherLoading] = useState<boolean>(false);
   const [weatherInfo, setWeatherInfo] = useState<any | null>(null);
+  // 城市选择面板的当前选中字母索引
+  const [selectedLetterIndex, setSelectedLetterIndex] = useState<number>(0);
   // 天气图标映射
   const getWeatherIcon = (desc?: string) => {
     if (!desc) return '☀️';
@@ -281,6 +330,51 @@ const MapPlayground: React.FC = () => {
     if (desc.includes('雾') || desc.includes('霾')) return '🌫️';
     return '☀️';
   };
+
+    // 根据 adcode 请求天气信息（使用优先的环境变量 key，回退到给定的 key）
+    const fetchWeatherForAdcode = useCallback(async (adcode: string | null) => {
+      if (!adcode) return;
+      const key = import.meta.env.VITE_AMAP_KEY || '49bfb83db90187047c48ccc2e711ea32';
+      setWeatherLoading(true);
+      try {
+        // 高德天气API，extensions=base 返回实时天气（lives）
+        const url = `https://restapi.amap.com/v3/weather/weatherInfo?key=${key}&city=${adcode}&extensions=base`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data && data.lives && data.lives.length > 0) {
+          setWeatherInfo(data.lives[0]);
+        } else {
+          setWeatherInfo(null);
+          console.warn('天气接口未返回数据', data);
+        }
+      } catch (e) {
+        console.warn('获取天气失败', e);
+        setWeatherInfo(null);
+      } finally {
+        setWeatherLoading(false);
+      }
+    }, []);
+
+  // 处理城市选择
+  const handleCitySelect = useCallback((city: CityData) => {
+    // 更新当前城市
+    setCurrentCity(city.name);
+    setCurrentCityAdcode(city.adcode);
+
+    // 移动地图中心到该城市
+    const [lng, lat] = city.center;
+    setMapCenter({ lng, lat });
+    setZoom(11);
+
+    // 加载该城市天气
+    fetchWeatherForAdcode(city.adcode);
+
+    // 关闭城市选择面板
+    setShowCityDropdown(false);
+    setCitySearchQuery('');
+
+    message.success(`已切换到: ${city.name}`);
+  }, [fetchWeatherForAdcode, setZoom]);
 
   // 路径规划相关状态
   const [routeResult, setRouteResult] = useState<RouteServiceResult | null>(null);
@@ -599,91 +693,21 @@ const MapPlayground: React.FC = () => {
     // 仅在以下状态变化时触发
   }, [showSatelliteMode, showSatelliteRoads]);
 
-  // 加载高德区划数据并转换为级联选择器格式（只请求中国三级数据）
-  useEffect(() => {
-    const loadDistricts = async () => {
-      const key = import.meta.env.VITE_AMAP_KEY;
-      if (!key) {
-        console.warn('VITE_AMAP_KEY 未配置，无法加载区划数据');
-        return;
-      }
-      setCascaderLoading(true);
-      try {
-        const url = `https://restapi.amap.com/v3/config/district?key=${key}&keywords=中国&subdistrict=3`;
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.status !== '1') {
-          console.warn('高德区划接口返回错误', data);
-          setCascaderOptions([]);
-          return;
-        }
-        const convert = (districts: any[]): any[] => {
-          return (districts || []).map(d => ({
-            label: d.name,
-            // value 包含 adcode 与 center，便于选择后定位
-            value: `${d.adcode || d.name}|${d.center || ''}`,
-            children: convert(d.districts)
-          }));
-        };
-        const options = convert(data.districts || []);
-        setCascaderOptions(options);
-      } catch (e) {
-        console.warn('加载区划数据失败', e);
-        setCascaderOptions([]);
-      } finally {
-        setCascaderLoading(false);
-      }
-    };
-    loadDistricts();
-  }, []);
 
-  // 根据 adcode 请求天气信息（使用优先的环境变量 key，回退到给定的 key）
-  const fetchWeatherForAdcode = useCallback(async (adcode: string | null) => {
-    if (!adcode) return;
-    const key = import.meta.env.VITE_AMAP_KEY || '49bfb83db90187047c48ccc2e711ea32';
-    setWeatherLoading(true);
-    try {
-      // 高德天气API，extensions=base 返回实时天气（lives）
-      const url = `https://restapi.amap.com/v3/weather/weatherInfo?key=${key}&city=${adcode}&extensions=base`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data && data.lives && data.lives.length > 0) {
-        setWeatherInfo(data.lives[0]);
-      } else {
-        setWeatherInfo(null);
-        console.warn('天气接口未返回数据', data);
-      }
-    } catch (e) {
-      console.warn('获取天气失败', e);
-      setWeatherInfo(null);
-    } finally {
-      setWeatherLoading(false);
-    }
-  }, []);
 
-  // 当 cascaderOptions 加载完成后，尝试找到默认 currentCity 的 adcode 并加载天气
+  // 初始化当前城市的 adcode（基于本地城市数据）
   useEffect(() => {
-    if (!cascaderOptions || cascaderOptions.length === 0) return;
-    // 递归查找 label === currentCity 的节点，优先市级
-    const findAdcode = (nodes: any[]): string | null => {
-      for (const p of nodes) {
-        if (p.label === currentCity) {
-          const parts = (p.value || '').split('|');
-          if (parts[0]) return parts[0];
-        }
-        if (p.children) {
-          const found = findAdcode(p.children);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    const adcode = findAdcode(cascaderOptions);
-    if (adcode) {
-      setCurrentCityAdcode(adcode);
-      fetchWeatherForAdcode(adcode);
+    if (currentCityAdcode) return;
+    const found = ALL_CITIES.find(
+      (c) =>
+        c.name === currentCity ||
+        c.name.replace(/市$/, '') === currentCity ||
+        currentCity.includes(c.name.replace(/市$/, '')),
+    );
+    if (found) {
+      setCurrentCityAdcode(found.adcode);
     }
-  }, [cascaderOptions, currentCity, fetchWeatherForAdcode]);
+  }, [currentCity, currentCityAdcode]);
 
   // 当用户选择新的城市 adcode 时，加载天气
   useEffect(() => {
@@ -691,6 +715,55 @@ const MapPlayground: React.FC = () => {
       fetchWeatherForAdcode(currentCityAdcode);
     }
   }, [currentCityAdcode, fetchWeatherForAdcode]);
+
+  // 城市搜索结果（基于本地城市数据）
+  useEffect(() => {
+    const q = citySearchQuery.trim();
+    if (!q) {
+      setCitySearchResults([]);
+      return;
+    }
+    setCitySearchResults(searchCities(q));
+  }, [citySearchQuery]);
+
+  // 省份分组（基于 adcode 前两位）
+  const provinceGroups = React.useMemo<ProvinceGroup[]>(() => {
+    const groups: ProvinceGroup[] = [];
+    Object.entries(PROVINCE_CODE_MAP).forEach(([code, name]) => {
+      const cities = ALL_CITIES.filter((c) => c.adcode.startsWith(code));
+      if (cities.length > 0) {
+        groups.push({ code, name, cities });
+      }
+    });
+    return groups;
+  }, []);
+
+  // 选择城市：更新当前城市、地图中心与天气
+  const handleSelectCity = useCallback(
+    (city: CityData) => {
+      setCurrentCity(city.name.replace(/市$/, ''));
+      setCurrentCityAdcode(city.adcode);
+      setMapCenter({ lng: city.center[0], lat: city.center[1] });
+      setZoom(11);
+      setShowCityDropdown(false);
+      message.success(`已切换到：${city.name}`);
+    },
+    [setMapCenter, setZoom],
+  );
+
+  // 热门城市列表
+  const hotCities = React.useMemo(
+    () =>
+      HOT_CITY_NAMES.map((name) =>
+        ALL_CITIES.find(
+          (c) =>
+            c.name === name ||
+            c.name.replace(/市$/, '') === name ||
+            name.includes(c.name.replace(/市$/, '')),
+        ),
+      ).filter(Boolean) as CityData[],
+    [],
+  );
 
   // 处理定位按钮点击
   const handleLocateMe = useCallback(() => {
@@ -895,7 +968,8 @@ const MapPlayground: React.FC = () => {
               position: 'absolute',
               left: 12,
               top: 12,
-              zIndex: 1200,
+              zIndex: 3000,
+              pointerEvents: 'auto',
             }}>
               <div style={{
                 display: 'flex',
@@ -910,103 +984,261 @@ const MapPlayground: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Popover
                     open={showCityDropdown}
-                    onOpenChange={(open) => setShowCityDropdown(open)}
+                    onOpenChange={(open) => {
+                      console.log('CityPopover onOpenChange ->', open);
+                      setShowCityDropdown(open);
+                    }}
                     trigger="click"
                     placement="bottomLeft"
+                    arrow={false}
+                    overlayStyle={{ zIndex: 3000 }}
+                    align={{ offset: [0, 20] }} 
+                    getPopupContainer={() => document.body}
                     content={
-                      <div style={{ width: 520, padding: 12 }}>
-                        <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
-                          <div style={{ flex: 1 }}>
+                      <div style={{ width: 560, padding: 12 }}>
+                        {/* 当前城市与热门城市 */}
+                        <div style={{ marginBottom: 8, fontSize: 13 }}>
+                          当前城市：
+                          <span style={{ color: '#1890ff', fontWeight: 600 }}>
+                            {currentCity}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                          <span style={{ fontSize: 13, color: '#999' }}>热门城市：</span>
+                          {hotCities.map((city) => (
+                            <Button
+                              key={`${city.adcode}-${city.name}`}
+                              size="small"
+                              type={
+                                city.name.replace(/市$/, '') === currentCity ? 'primary' : 'default'
+                              }
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleSelectCity(city);
+                              }}
+                            >
+                              {city.name.replace(/市$/, '')}
+                            </Button>
+                          ))}
+                        </div>
+
+                        {/* 顶部标签 + 搜索框 */}
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            marginBottom: 8,
+                          }}
+                        >
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <Button
+                              size="small"
+                              type={cityTab === 'city' ? 'primary' : 'default'}
+                              onClick={() => setCityTab('city')}
+                            >
+                              按城市
+                            </Button>
+                            <Button
+                              size="small"
+                              type={cityTab === 'province' ? 'primary' : 'default'}
+                              onClick={() => setCityTab('province')}
+                            >
+                              按省份
+                            </Button>
+                          </div>
+                          <div style={{ width: 240 }}>
                             <Input.Search
-                              placeholder="搜索城市"
+                              placeholder="输入城市名/拼音"
+                              allowClear
+                              size="small"
                               value={citySearchQuery}
                               onChange={(e) => setCitySearchQuery(e.target.value)}
                               onSearch={(v) => setCitySearchQuery(v)}
-                              enterButton
                             />
                           </div>
-                          <div style={{ width: 200 }}>
-                            <Spin spinning={cascaderLoading} size="small">
-                              <Cascader
-                                options={cascaderOptions}
-                                placeholder="选择城市/区县"
-                                style={{ width: '100%' }}
-                                expandTrigger="hover"
-                                changeOnSelect
-                                onChange={(values: any[], selectedOptions: any[]) => {
-                                  if (!values || values.length === 0) return;
-                                  const last = values[values.length - 1] as string;
-                                  const parts = last.split('|');
-                                  const center = parts[1] || '';
-                                  if (center) {
-                                    const [lngStr, latStr] = center.split(',');
-                                    const lng = parseFloat(lngStr);
-                                    const lat = parseFloat(latStr);
-                                    if (!isNaN(lng) && !isNaN(lat)) {
-                                      setMapCenter({ lng, lat });
-                                      setZoom(11);
-                                      const label = selectedOptions?.[selectedOptions.length-1]?.label || '';
-                                      setCurrentCity(label);
-                                      const adcode = (values[values.length-1] || '').toString().split('|')[0];
-                                      if (adcode) setCurrentCityAdcode(adcode);
-                                      setShowCityDropdown(false);
-                                    }
-                                  }
+                        </div>
+
+                        {/* 列表区域 */}
+                        <div style={{ maxHeight: '60vh', overflow: 'auto', fontSize: 13 }}>
+                          {cityTab === 'city' ? (
+                            <>
+                              {/* 字母索引 */}
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  flexWrap: 'wrap',
+                                  gap: 4,
+                                  padding: '4px 0',
+                                  borderTop: '1px solid #f0f0f0',
+                                  borderBottom: '1px solid #f0f0f0',
+                                  marginBottom: 8,
                                 }}
-                              />
-                            </Spin>
-                          </div>
-                        </div>
+                              >
+                                {LETTERS.map((letter) => (
+                                  <Button
+                                    key={letter}
+                                    size="small"
+                                    type={activeLetter === letter ? 'primary' : 'text'}
+                                    style={{ padding: '0 6px', height: 22, lineHeight: '20px' }}
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      setActiveLetter(letter);
+                                      // 滚动到对应字母分组
+                                      const section = document.getElementById(
+                                        `city-section-${letter}`,
+                                      );
+                                      if (section) {
+                                        section.scrollIntoView({
+                                          behavior: 'smooth',
+                                          block: 'start',
+                                        });
+                                      }
+                                    }}
+                                  >
+                                    {letter}
+                                  </Button>
+                                ))}
+                              </div>
 
-                        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-                          {['A','B','C','D','E','F','G','H','J','K','L','M','N','P','Q','R','S','T','W','X','Y','Z'].map(letter => (
-                            <Button key={letter} size="small" style={{ padding: '2px 6px' }}>{letter}</Button>
-                          ))}
-                        </div>
-
-                        <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
-                          {(cascaderOptions || []).filter((p: any) => {
-                            if (!citySearchQuery) return true;
-                            return p.label.includes(citySearchQuery);
-                          }).map((province: any) => (
-                            <div key={province.value} style={{ marginBottom: 12 }}>
-                              <div style={{ fontWeight: 600, marginBottom: 6 }}>{province.label}</div>
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                                {(province.children || []).map((city: any) => {
-                                  return (
-                                    <Button
-                                      key={city.value}
-                                      size="small"
-                                      onClick={() => {
-                                        const parts = (city.value || '').split('|');
-                                        const adcode = parts[0] || '';
-                                        const center = parts[1] || '';
-                                        if (center) {
-                                          const [lngStr, latStr] = center.split(',');
-                                          const lng = parseFloat(lngStr);
-                                          const lat = parseFloat(latStr);
-                                          if (!isNaN(lng) && !isNaN(lat)) {
-                                            setMapCenter({ lng, lat });
-                                            setZoom(11);
-                                            setCurrentCity(city.label);
-                                            if (adcode) setCurrentCityAdcode(adcode);
-                                            setShowCityDropdown(false);
-                                          }
-                                        }
+                              {/* 城市列表（按字母） */}
+                              {citySearchQuery.trim() ? (
+                                citySearchResults.length > 0 ? (
+                                  citySearchResults.map((city) => (
+                                    <div
+                                      key={`${city.adcode}-${city.name}`}
+                                      style={{
+                                        padding: '6px 4px',
+                                        borderBottom: '1px solid #f5f5f5',
+                                        cursor: 'pointer',
+                                      }}
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        handleSelectCity(city);
                                       }}
                                     >
-                                      {city.label}
-                                    </Button>
+                                      <span style={{ marginRight: 8 }}>{city.name}</span>
+                                      <span style={{ color: '#999', fontSize: 12}}>
+                                        {city.pinyin}
+                                      </span>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div style={{ padding: 8, color: '#999' }}>未找到匹配的城市</div>
+                                )
+                              ) : (
+                                LETTERS.map((letter) => {
+                                  const list = CITIES_BY_LETTER[letter] || [];
+                                  if (!list.length) return null;
+                                  return (
+                                    <div
+                                      key={letter}
+                                      id={`city-section-${letter}`}
+                                      style={{
+                                        padding: '6px 0',
+                                        background:
+                                          letter === activeLetter
+                                            ? 'rgba(24,144,255,0.03)'
+                                            : 'transparent',
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontWeight: 600,
+                                          marginBottom: 4,
+                                          color: '#1890ff',
+                                        }}
+                                      >
+                                        {letter}
+                                      </div>
+                                      <div
+                                        style={{
+                                          display: 'flex',
+                                          flexWrap: 'wrap',
+                                          gap: 8,
+                                          paddingLeft: 4,
+                                        }}
+                                      >
+                                        {list.map((city, idx) => (
+                                          <span
+                                            key={`${city.adcode}-${city.name}-${idx}`}
+                                            style={{
+                                              cursor: 'pointer',
+                                              whiteSpace: 'nowrap',
+                                              padding: '2px 4px',
+                                              borderRadius: 4,
+                                            }}
+                                            onMouseDown={(e) => {
+                                              e.preventDefault();
+                                              handleSelectCity(city);
+                                            }}
+                                          >
+                                            {city.name.replace(/市$/, '')}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
                                   );
-                                })}
-                              </div>
-                            </div>
-                          ))}
+                                })
+                              )}
+                            </>
+                          ) : (
+                            /* 按省份 */
+                            <>
+                              {provinceGroups.map((pg) => (
+                                <div
+                                  key={pg.code}
+                                  style={{
+                                    padding: '6px 0',
+                                    borderBottom: '1px solid #f5f5f5',
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      fontWeight: 600,
+                                      marginBottom: 4,
+                                      color: '#1890ff',
+                                    }}
+                                  >
+                                    {pg.name}
+                                  </div>
+                                  <div
+                                    style={{
+                                      display: 'flex',
+                                      flexWrap: 'wrap',
+                                      gap: 8,
+                                      paddingLeft: 4,
+                                    }}
+                                  >
+                                    {pg.cities.map((city, idx) => (
+                                      <span
+                                        key={`${pg.code}-${city.adcode}-${idx}`}
+                                        className="city-item"
+                                        style={{
+                                          cursor: 'pointer',
+                                          whiteSpace: 'nowrap',
+                                          padding: '2px 4px',
+                                          borderRadius: 4,
+                                        }}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          handleSelectCity(city);
+                                        }}
+                                      >
+                                        {city.name.replace(/市$/, '')}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </>
+                          )}
                         </div>
                       </div>
                     }
                   >
-                    <Button size="small" onClick={() => setShowCityDropdown(v => !v)}>
+                    <Button size="small">
                       <span style={{ color: '#1890ff' }}>{currentCity}</span> ▾
                     </Button>
                   </Popover>

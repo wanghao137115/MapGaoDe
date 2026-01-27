@@ -13,4 +13,7 @@ body {
     Arial, 'Noto Sans', sans-serif;
 }
 
+.city-item:hover {
+  color: #1890ff;
+}
 
