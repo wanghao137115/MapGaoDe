@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Cascader, Spin, Popover, Input } from "antd";
-import { EnvironmentOutlined, FullscreenOutlined, GlobalOutlined, CarOutlined, RadarChartOutlined, AimOutlined } from "@ant-design/icons";
+import { EnvironmentOutlined, FullscreenOutlined, GlobalOutlined, CarOutlined, RadarChartOutlined, AimOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
 import MapContainer from "@/components/Map/MapContainer";
 import MarkerLayer from "@/components/Map/MarkerLayer"; // 导入标记层组件
 import MarkerList from "@/components/Map/MarkerList"; // 导入标记列表组件
@@ -23,7 +23,7 @@ const { Panel } = Collapse;
 // 添加路径规划服务导入
 import { planDrivingRoute, planWalkingRoute, planTransitRoute, planRidingRoute, planElectricRoute } from "@/services/map";
 import type { RouteServiceResult } from "@/types";
-import { RouteServiceStatus } from "@/types";
+import { RouteServiceStatus, RouteStrategy } from "@/types";
 
 // 导入路径规划相关组件
 import RoutePlanningForm, { RoutePlanningParams } from '@/components/Map/RoutePlanningForm';
@@ -190,6 +190,10 @@ const MapPlayground: React.FC = () => {
   }, []);
 
   const addRouteHistory = useCallback((item: any) => {
+    // 检查起点和终点是否有效
+    if (!item.originText?.trim() || !item.destText?.trim()) {
+      return;
+    }
     setRouteHistory((prev: any[]) => {
       // Normalize compare: prefer coordinates if available, fallback to texts
       const isSame = (a: any, b: any) => {
@@ -207,9 +211,28 @@ const MapPlayground: React.FC = () => {
         return at === bt && ad === bd;
       };
 
-      // Remove existing duplicate (same origin/dest) if present
-      const filtered = prev.filter(h => !isSame(h, item));
-      const next = [item, ...filtered].slice(0, 12);
+      // 检查是否已存在相同起终点的记录
+      const existingIndex = prev.findIndex(h => isSame(h, item));
+
+      // 如果已存在，更新该记录（不创建新记录）
+      if (existingIndex >= 0) {
+        const updated = [...prev];
+        // 更新时间戳但保持稳定的ID
+        updated[existingIndex] = {
+          ...item,
+          id: `${item.originText?.trim()}=>${item.destText?.trim()}`.replace(/\s+/g, ''),
+          updatedAt: Date.now()
+        };
+        // 将更新的记录移到顶部
+        const [updatedItem] = updated.splice(existingIndex, 1);
+        const next = [updatedItem, ...updated].slice(0, 12);
+        try { localStorage.setItem(ROUTE_HISTORY_KEY, JSON.stringify(next)); } catch (e) { /* ignore */ }
+        return next;
+      }
+
+      // 如果不存在，添加新记录（使用稳定的ID，不含时间戳）
+      const stableId = `${item.originText?.trim()}=>${item.destText?.trim()}`.replace(/\s+/g, '');
+      const next = [{ ...item, id: stableId }, ...prev].slice(0, 12);
       try { localStorage.setItem(ROUTE_HISTORY_KEY, JSON.stringify(next)); } catch (e) { /* ignore */ }
       return next;
     });
@@ -263,6 +286,12 @@ const MapPlayground: React.FC = () => {
   const [routeResult, setRouteResult] = useState<RouteServiceResult | null>(null);
   const [routePlanning, setRoutePlanning] = useState(false);
   const [routeParams, setRouteParams] = useState<RoutePlanningParams | null>(null);
+  // 路线方案选项卡（仅驾车）：推荐方案 / 避免拥堵
+  const [routeStrategyTab, setRouteStrategyTab] = useState<'recommend' | 'avoidCongestion'>('recommend');
+  // 多方案：当前选中的方案索引
+  const [routePlanIndex, setRoutePlanIndex] = useState<number>(0);
+  // 多方案：当前展开的方案索引（null 表示全部折叠）
+  const [expandedPlanIndex, setExpandedPlanIndex] = useState<number | null>(null);
 
   // 使用定位 Hook
   const {
@@ -696,7 +725,7 @@ const MapPlayground: React.FC = () => {
     try {
       // 根据模式调用不同的规划服务
       const result: RouteServiceResult = params.mode === 'driving'
-        ? await planDrivingRoute(params.origin, params.destination)
+        ? await planDrivingRoute(params.origin, params.destination, params.waypoints, params.strategy)
         : await planWalkingRoute(params.origin, params.destination);
 
       // 保存规划结果
@@ -705,6 +734,11 @@ const MapPlayground: React.FC = () => {
       // 根据结果显示不同消息
       if (result.status === RouteServiceStatus.SUCCESS) {
         message.success(`${params.mode === 'driving' ? '🚗 驾车' : params.mode === 'walking' ? '🚶 步行' : '出行'}规划成功！`);
+        // 保存到历史记录（去重用稳定ID）
+        addRouteHistory({
+          id: `${originText}=>${destText}`.replace(/\s+/g, ''),
+          originText, destText, originLocation, destLocation, mode: params.mode
+        });
       } else {
         // 不直接弹出错误，这里交给调用方决定是否重试或提示
         console.warn('规划返回非成功状态', result);
@@ -727,7 +761,10 @@ const MapPlayground: React.FC = () => {
       if (!routeResult) return; // only replan if there's an existing result (user had planned before)
 
       message.info('出行方式已切换，正在重新规划路线...');
-      const res = await handlePlanRoute({ origin: originLocation, destination: destLocation, mode: routeMode } as any);
+      const strategy = routeMode === 'driving'
+        ? (routeStrategyTab === 'avoidCongestion' ? RouteStrategy.AVOID_CONGESTION : RouteStrategy.FASTEST)
+        : undefined;
+      const res = await handlePlanRoute({ origin: originLocation, destination: destLocation, mode: routeMode, strategy } as any);
       if (res && res.status === RouteServiceStatus.SUCCESS) {
         // 保存一次历史，标记为当前 mode
         addRouteHistory({
@@ -1260,6 +1297,9 @@ const MapPlayground: React.FC = () => {
                               destination: destLocation,
                               mode: routeMode,
                               waypoints: validWaypoints.length > 0 ? validWaypoints : undefined,
+                              strategy: routeMode === 'driving'
+                                ? (routeStrategyTab === 'avoidCongestion' ? RouteStrategy.AVOID_CONGESTION : RouteStrategy.FASTEST)
+                                : undefined,
                             } as any;
                             await handlePlanRoute(params);
                             // 保存历史
@@ -1267,78 +1307,232 @@ const MapPlayground: React.FC = () => {
                               id: `${originText}=>${destText}-${Date.now()}`,
                               originText, destText, originLocation, destLocation, mode: routeMode
                             });
-                            setShowRoutePanel(false);
                           }}>{routeMode === 'driving' ? '开车去' : routeMode === 'transit' ? '公交去' : routeMode === 'riding' ? '骑行去' : routeMode === 'electric' ? '电动车去' : '步行去'}</Button>
                         </div>
 
-                        {/* 路线搜索记录 或 输入时显示的搜索建议 */}
+                        {/* 路线搜索记录 / 推荐方案面板 */}
                         <div style={{ marginTop: 12 }}>
-                          <div style={{ fontWeight: 600, marginBottom: 6 }}>{routePanelSearchVisible ? '搜索结果' : '路线搜索记录'}</div>
-                          <div style={{ maxHeight: 160, overflow: 'auto' }}>
-                            {routePanelSearchVisible ? (
-                              (routePanelSearchResults || []).length > 0 ? (routePanelSearchResults || []).map((p: any) => (
-                                <div key={p.id} style={{ padding: '8px 6px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }} onMouseDown={(e) => { e.preventDefault();
-                                  if (routePanelSearchTarget === 'origin') {
-                                    setOriginText(p.name); setOriginLocation(p.location);
-                                  } else if (routePanelSearchTarget === 'waypoint' && routePanelWaypointIdRef.current) {
-                                    setWaypoints(prev => prev.map(wp =>
-                                      wp.id === routePanelWaypointIdRef.current ? { ...wp, name: p.name, location: p.location } : wp
-                                    ));
-                                  } else {
-                                    setDestText(p.name); setDestLocation(p.location);
-                                  }
-                                  setRoutePanelSearchVisible(false);
-                                }}>
-                                  <div style={{ fontSize: 13 }}>{p.name}</div>
-                                  {p.address && <div style={{ fontSize: 12, color: '#888' }}>{p.address}</div>}
-                                </div>
-                              )) : <div style={{ color: '#888', padding: 6 }}>无匹配结果</div>
-                            ) : (
-                              (routeHistory && routeHistory.length > 0) ? routeHistory.map((r: any) => (
-                                <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 4px', borderBottom: '1px solid #f0f0f0' }}>
-                                <div
-                                    style={{ cursor: 'pointer', flex: 1 }}
-                                    onMouseDown={async () => {
-                                      if (r.originLocation && r.destLocation) {
-                                        setOriginLocation(r.originLocation); setDestLocation(r.destLocation);
-                                        setOriginText(r.originText || '起点'); setDestText(r.destText || '终点');
-                                        setMapCenter(r.originLocation);
-                                        setZoom(13);
+                          {/* 优先显示搜索结果；否则如果已有规划结果，显示方案 Tab + 折叠详情；再否则显示原来的搜索/历史列表 */}
+                          {routeResult && routeResult.status === RouteServiceStatus.SUCCESS && routeResult.data && !routePanelSearchVisible ? (
+                            <div>
+                              {/* 当前展示的方案（高德可能返回多条 paths） */}
+                              {(() => {
+                                const plans = (routeResult.data as any).plans as any[] | undefined;
+                                const selected = (plans && plans.length > 0)
+                                  ? (plans[routePlanIndex] || plans[0])
+                                  : routeResult.data;
+                                const selectedSteps = (selected as any)?.steps || [];
 
-                                        // 直接触发规划，使用当前面板选择的 mode
-                                        const res = await handlePlanRoute({ origin: r.originLocation, destination: r.destLocation, mode: routeMode } as any);
-                                        // 如果规划失败且错误为 OVER_DIRECTION_RANGE，尝试驾车作为回退
-                                        if (res && res.status !== RouteServiceStatus.SUCCESS) {
-                                          const errCode = res.error?.code || res.error?.message;
-                                          if (errCode === 'OVER_DIRECTION_RANGE' && routeMode !== 'driving') {
-                                            message.warning('当前出行方式超出可行范围，尝试使用驾车规划...');
-                                            const fallback = await handlePlanRoute({ origin: r.originLocation, destination: r.destLocation, mode: 'driving' } as any);
-                                            if (fallback && fallback.status === RouteServiceStatus.SUCCESS) {
-                                              setRouteMode('driving');
-                                              addRouteHistory({
-                                                id: `${r.originText}=>${r.destText}-${Date.now()}`,
-                                                originText: r.originText, destText: r.destText, originLocation: r.originLocation, destLocation: r.destLocation, mode: 'driving'
-                                              });
-                                              message.success('驾车规划成功（已回退）');
-                                            } else {
-                                              message.error(`规划失败: ${fallback?.error?.message || fallback?.error?.code || '未知错误'}`);
-                                            }
-                                          } else {
-                                            message.error(`规划失败: ${res.error?.message || res.error?.code || '未知错误'}`);
-                                          }
+                                const makeViaText = (steps: any[]) => {
+                                  if (!steps || steps.length === 0) return '若干道路';
+                                  return steps
+                                    .slice(0, 3)
+                                    .map(s => (s.instruction || '').toString().trim())
+                                    .filter(Boolean)
+                                    .join('、') || '若干道路';
+                                };
+
+                                return (
+                                  <>
+                              {/* 顶部方案切换：推荐方案 / 避免拥堵（仅驾车模式下高亮可切换） */}
+                              {routeMode === 'driving' && (
+                                <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0', marginBottom: 8 }}>
+                                  {[
+                                    { key: 'recommend' as const, label: '推荐方案', strategy: RouteStrategy.FASTEST },
+                                    { key: 'avoidCongestion' as const, label: '避免拥堵', strategy: RouteStrategy.AVOID_CONGESTION },
+                                  ].map(tab => (
+                                    <div
+                                      key={tab.key}
+                                      onClick={async () => {
+                                        if (routeStrategyTab === tab.key) return;
+                                        setRouteStrategyTab(tab.key);
+                                        setRoutePlanIndex(0);
+                                        setExpandedPlanIndex(null);
+                                        // 重新按策略规划（需要起终点存在）
+                                        if (originLocation && destLocation) {
+                                          const params: RoutePlanningParams = {
+                                            origin: originLocation,
+                                            destination: destLocation,
+                                            mode: 'driving',
+                                            strategy: tab.strategy,
+                                          } as any;
+                                          await handlePlanRoute(params);
                                         }
-                                      }
-                                    }}
-                                  >
-                                    {(r.originText || '起点')} → {(r.destText || '终点')}
-                                  </div>
-                                  <div style={{ display: 'flex', gap: 6 }}>
-                                    <Button size="small" danger onClick={() => removeRouteHistoryItem(r.id)}>删除</Button>
-                                  </div>
+                                      }}
+                                      style={{
+                                        padding: '6px 12px',
+                                        cursor: 'pointer',
+                                        fontSize: 13,
+                                        color: routeStrategyTab === tab.key ? '#1890ff' : '#666',
+                                        borderBottom: routeStrategyTab === tab.key ? '2px solid #1890ff' : '2px solid transparent',
+                                        fontWeight: routeStrategyTab === tab.key ? 600 : 400,
+                                      }}
+                                    >
+                                      {tab.label}
+                                    </div>
+                                  ))}
+                                  <div style={{ flex: 1 }} />
                                 </div>
-                              )) : <div style={{ color: '#888' }}>暂无路线记录</div>
-                            )}
-                          </div>
+                              )}
+
+                              {/* 多方案列表（垂直）：默认都折叠，点右侧箭头展开；点整行切换地图路线 */}
+                              <div style={{ maxHeight: 220, overflow: 'auto' }}>
+                                {(plans && plans.length > 0 ? plans : [selected]).map((plan: any, idx: number) => {
+                                  const expanded = expandedPlanIndex === idx;
+                                  const isActive = routePlanIndex === idx;
+                                  const steps = plan?.steps || [];
+                                  return (
+                                    <div
+                                      key={idx}
+                                      style={{
+                                        borderBottom: '1px solid #f0f0f0',
+                                        padding: '8px 2px',
+                                        background: isActive ? '#f6fbff' : 'transparent',
+                                      }}
+                                    >
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div
+                                          style={{ cursor: 'pointer', flex: 1 }}
+                                          onClick={() => {
+                                            setRoutePlanIndex(idx);
+                                          }}
+                                        >
+                                          <div style={{ fontSize: 14, fontWeight: 600 }}>
+                                            约{Math.max(1, Math.round(((plan?.duration || 0) as number) / 60))}分钟
+                                            <span style={{ margin: '0 8px', color: '#999' }}>
+                                              {(((plan?.distance || 0) as number) / 1000).toFixed(1)}公里
+                                            </span>
+                                          </div>
+                                          <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+                                            途经：{makeViaText(steps)}
+                                          </div>
+                                        </div>
+                                        <div
+                                          style={{ color: '#999', paddingRight: 4, cursor: 'pointer' }}
+                                          onClick={() => setExpandedPlanIndex(v => (v === idx ? null : idx))}
+                                        >
+                                          {expanded ? <UpOutlined /> : <DownOutlined />}
+                                        </div>
+                                      </div>
+
+                                      {expanded && (
+                                        <div style={{ marginTop: 8, borderTop: '1px solid #f5f5f5', paddingTop: 8 }}>
+                                          {/* 起点 */}
+                                          <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 6 }}>
+                                            <div style={{ width: 24, textAlign: 'center', color: '#1890ff', fontSize: 12 }}>
+                                              起
+                                            </div>
+                                            <div style={{ flex: 1 }}>
+                                              <div style={{ fontSize: 13, fontWeight: 500 }}>
+                                                从 {originText || '起点'} 出发
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          {/* 步骤 */}
+                                          {steps.map((step: any, sIdx: number) => (
+                                            <div key={sIdx} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 6 }}>
+                                              <div style={{ width: 24, textAlign: 'center', color: '#52c41a', fontSize: 12 }}>●</div>
+                                              <div style={{ flex: 1 }}>
+                                                <div style={{ fontSize: 13 }}>{step.instruction}</div>
+                                                <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+                                                  {(((step.distance || 0) as number) / 1000).toFixed(1)}公里
+                                                </div>
+                                              </div>
+                                            </div>
+                                          ))}
+
+                                          {/* 终点 */}
+                                          <div style={{ display: 'flex', alignItems: 'flex-start', marginTop: 4 }}>
+                                            <div style={{ width: 24, textAlign: 'center', color: '#ff4d4f', fontSize: 12 }}>
+                                              终
+                                            </div>
+                                            <div style={{ flex: 1 }}>
+                                              <div style={{ fontSize: 13, fontWeight: 500 }}>
+                                                到达终点 {destText || '终点'}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          ) : (
+                            <div>
+                              <div style={{ fontWeight: 600, marginBottom: 6 }}>{routePanelSearchVisible ? '搜索结果' : '路线搜索记录'}</div>
+                              <div style={{ maxHeight: 160, overflow: 'auto' }}>
+                                {routePanelSearchVisible ? (
+                                  (routePanelSearchResults || []).length > 0 ? (routePanelSearchResults || []).map((p: any) => (
+                                    <div key={p.id} style={{ padding: '8px 6px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }} onMouseDown={(e) => { e.preventDefault();
+                                      if (routePanelSearchTarget === 'origin') {
+                                        setOriginText(p.name); setOriginLocation(p.location);
+                                      } else if (routePanelSearchTarget === 'waypoint' && routePanelWaypointIdRef.current) {
+                                        setWaypoints(prev => prev.map(wp =>
+                                          wp.id === routePanelWaypointIdRef.current ? { ...wp, name: p.name, location: p.location } : wp
+                                        ));
+                                      } else {
+                                        setDestText(p.name); setDestLocation(p.location);
+                                      }
+                                      setRoutePanelSearchVisible(false);
+                                    }}>
+                                      <div style={{ fontSize: 13 }}>{p.name}</div>
+                                      {p.address && <div style={{ fontSize: 12, color: '#888' }}>{p.address}</div>}
+                                    </div>
+                                  )) : <div style={{ color: '#888', padding: 6 }}>无匹配结果</div>
+                                ) : (
+                                  (routeHistory && routeHistory.length > 0) ? routeHistory.map((r: any) => (
+                                    <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 4px', borderBottom: '1px solid #f0f0f0' }}>
+                                      <div
+                                        style={{ cursor: 'pointer', flex: 1 }}
+                                        onMouseDown={async () => {
+                                          if (r.originLocation && r.destLocation) {
+                                            setOriginLocation(r.originLocation); setDestLocation(r.destLocation);
+                                            setOriginText(r.originText || ''); setDestText(r.destText || '');
+                                            setMapCenter(r.originLocation);
+                                            setZoom(13);
+
+                                            // 直接触发规划，使用当前面板选择的 mode
+                                            const res = await handlePlanRoute({ origin: r.originLocation, destination: r.destLocation, mode: routeMode } as any);
+                                            // 如果规划失败且错误为 OVER_DIRECTION_RANGE，尝试驾车作为回退
+                                            if (res && res.status !== RouteServiceStatus.SUCCESS) {
+                                              const errCode = res.error?.code || res.error?.message;
+                                              if (errCode === 'OVER_DIRECTION_RANGE' && routeMode !== 'driving') {
+                                                message.warning('当前出行方式超出可行范围，尝试使用驾车规划...');
+                                                const fallback = await handlePlanRoute({ origin: r.originLocation, destination: r.destLocation, mode: 'driving' } as any);
+                                                if (fallback && fallback.status === RouteServiceStatus.SUCCESS) {
+                                                  setRouteMode('driving');
+                                                  addRouteHistory({
+                                                    id: `${r.originText}=>${r.destText}`.replace(/\s+/g, ''),
+                                                    originText: r.originText, destText: r.destText, originLocation: r.originLocation, destLocation: r.destLocation, mode: 'driving'
+                                                  });
+                                                  message.success('驾车规划成功（已回退）');
+                                                } else {
+                                                  message.error(`规划失败: ${fallback?.error?.message || fallback?.error?.code || '未知错误'}`);
+                                                }
+                                              } else {
+                                                message.error(`规划失败: ${res.error?.message || res.error?.code || '未知错误'}`);
+                                              }
+                                            }
+                                          }
+                                        }}
+                                      >
+                                        {(r.originText || '起点')} → {(r.destText || '终点')}
+                                      </div>
+                                      <div style={{ display: 'flex', gap: 6 }}>
+                                        <Button size="small" danger onClick={() => removeRouteHistoryItem(r.id)}>删除</Button>
+                                      </div>
+                                    </div>
+                                  )) : <div style={{ color: '#888' }}>暂无路线记录</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1500,7 +1694,9 @@ const MapPlayground: React.FC = () => {
               >
                 {/* 路径绘制层 */}
                 <RouteLayer
-                  polyline={routeResult?.data?.polyline || []}
+                  polyline={(routeResult?.data?.plans && routeResult.data.plans.length > 0
+                    ? (routeResult.data.plans[routePlanIndex]?.polyline || routeResult.data.polyline)
+                    : (routeResult?.data?.polyline || []))}
                   mode={routeParams?.mode || 'driving'}
                   visible={routeResult?.status === 'success' && !!routeResult.data}
                 />

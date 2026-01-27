@@ -61,13 +61,26 @@ export interface RoutePoint {
   name?: string;
 }
 
-// 路径规划结果
-export interface RouteResult {
+// 单条路线方案（高德可能返回多条 paths）
+export interface RoutePlan {
   polyline: MapPosition[]; // 路径点序列（用于绘制路线）
   distance: number;        // 总距离（米）
   duration: number;        // 预计时长（秒）
   tolls?: number;          // 收费金额（元，仅驾车）
   steps?: RouteStep[];     // 详细步骤说明
+}
+
+// 路径规划结果
+export interface RouteResult {
+  // 当前选中的路线（为了兼容现有 UI/绘制逻辑）
+  polyline: MapPosition[]; // 路径点序列（用于绘制路线）
+  distance: number;        // 总距离（米）
+  duration: number;        // 预计时长（秒）
+  tolls?: number;          // 收费金额（元，仅驾车）
+  steps?: RouteStep[];     // 详细步骤说明
+
+  // 多方案（仅当高德返回多条 paths 时存在）
+  plans?: RoutePlan[];
 }
 
 
@@ -85,6 +98,7 @@ export interface RouteRequest {
   destination: MapPosition; // 终点
   waypoints?: MapPosition[]; // 途经点（可选）
   strategy?: RouteStrategy;  // 规划策略
+  city?: string;            // 公交换乘城市（可选）
 }
 
 // 路径规划策略枚举

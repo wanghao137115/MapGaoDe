@@ -5,6 +5,7 @@ import React, { useState } from 'react';
 import { Form, Input, Button, Select, Space, Divider } from 'antd';
 import { EnvironmentOutlined, SwapOutlined } from '@ant-design/icons';
 import type { MapPosition } from '@/types';
+import { RouteStrategy } from '@/types';
 
 // Select组件的Option子组件
 const { Option } = Select;
@@ -23,6 +24,7 @@ export interface RoutePlanningParams {
   originName?: string;               // 起点名称（可选）
   destinationName?: string;          // 终点名称（可选）
   waypoints?: MapPosition[];         // 途径点坐标数组（可选）
+  strategy?: RouteStrategy;          // 规划策略（可选，仅驾车时使用）
 }
 
 // 主组件定义

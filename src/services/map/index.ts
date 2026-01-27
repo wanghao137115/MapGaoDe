@@ -10,7 +10,8 @@ import type {
     RouteRequest,
     RouteServiceResult,
     RouteError,
-    RouteStep
+    RouteStep,
+    RoutePlan
   } from '@/types';
 
 // 导入运行时需要的枚举
@@ -395,8 +396,13 @@ export class WebServiceRoutePlanning {
       const response = await fetch(url);
       const data = await response.json();
 
+      // 调试：打印高德驾车规划原始数据
+      console.log('[AMap Driving] raw response:', data);
+
       if (data.status === '1' && data.route) {
         const routeResult = this.parseWebServiceDrivingResult(data);
+        // 调试：打印解析后的多方案结果
+        console.log('[AMap Driving] parsed result:', routeResult);
         return {
           status: RouteServiceStatus.SUCCESS,
           data: routeResult
@@ -440,6 +446,9 @@ export class WebServiceRoutePlanning {
 
       const response = await fetch(url);
       const data = await response.json();
+
+      // 调试：打印高德步行规划原始数据
+      console.log('[AMap Walking] raw response:', data);
 
       if (data.status === '1' && data.route) {
         const routeResult = this.parseWebServiceWalkingResult(data);
@@ -648,45 +657,52 @@ export class WebServiceRoutePlanning {
    * 解析Web服务驾车规划结果
    */
   private parseWebServiceDrivingResult(data: any): RouteResult {
-    const route = data.route.paths[0]; // 取第一条路径
-    const polyline: MapPosition[] = [];
+    const paths: any[] = data?.route?.paths || [];
 
-    // 解析步骤信息，并将所有步骤的polyline合并成完整路径
-    const steps: RouteStep[] = [];
-    if (route.steps) {
-      route.steps.forEach((step: any, index: number) => {
-        const stepPolyline = this.parseStepPolylineWebService(step.polyline || '');
+    const plans: RoutePlan[] = paths.map((route: any) => {
+      const polyline: MapPosition[] = [];
+      const steps: RouteStep[] = [];
 
-        // 将步骤的路径点添加到主路径中
-        polyline.push(...stepPolyline);
-
-        steps.push({
-          instruction: step.instruction || step.ori_instruction || `第${index + 1}步`,
-          distance: parseInt(step.distance) || 0,
-          duration: parseInt(step.duration) || 0,
-          polyline: stepPolyline
+      // 解析步骤信息，并将所有步骤的polyline合并成完整路径
+      if (route.steps) {
+        route.steps.forEach((step: any, index: number) => {
+          const stepPolyline = this.parseStepPolylineWebService(step.polyline || '');
+          polyline.push(...stepPolyline);
+          steps.push({
+            instruction: step.instruction || step.ori_instruction || `第${index + 1}步`,
+            distance: parseInt(step.distance) || 0,
+            duration: parseInt(step.duration) || 0,
+            polyline: stepPolyline
+          });
         });
+      }
 
-      });
-    }
+      // 如果主路径没有polyline但有 route.polyline，则使用它
+      if (polyline.length === 0 && route.polyline) {
+        const coordinates = route.polyline.split(';');
+        coordinates.forEach((coord: string) => {
+          const [lng, lat] = coord.split(',').map(Number);
+          if (!isNaN(lng) && !isNaN(lat)) {
+            polyline.push({ lng, lat });
+          }
+        });
+      }
 
-    // 如果主路径没有polyline但有步骤，则使用合并后的步骤polyline
-    if (polyline.length === 0 && route.polyline) {
-      const coordinates = route.polyline.split(';');
-      coordinates.forEach((coord: string) => {
-        const [lng, lat] = coord.split(',').map(Number);
-        if (!isNaN(lng) && !isNaN(lat)) {
-          polyline.push({ lng, lat });
-        }
-      });
-    }
+      return {
+        polyline,
+        distance: parseInt(route.distance) || 0,
+        duration: parseInt(route.duration) || 0,
+        tolls: parseFloat(route.tolls) || 0,
+        steps
+      };
+    });
 
+    const first = plans[0] || { polyline: [], distance: 0, duration: 0, tolls: 0, steps: [] };
+
+    // 兼容：顶层字段仍然放“当前选中方案”（默认第一条）
     return {
-      polyline,
-      distance: parseInt(route.distance) || 0,
-      duration: parseInt(route.duration) || 0,
-      tolls: parseFloat(route.tolls) || 0,
-      steps
+      ...first,
+      plans
     };
   }
 
@@ -772,15 +788,17 @@ export function createRoutePlanningService(): RoutePlanningService {
  * @param origin 起点
  * @param destination 终点
  * @param waypoints 途经点（可选）
+ * @param strategy 规划策略（推荐方案 / 避免拥堵 等）
  * @returns Promise<RouteServiceResult>
  */
 export async function planDrivingRoute(
   origin: MapPosition,
   destination: MapPosition,
-  waypoints?: MapPosition[]
+  waypoints?: MapPosition[],
+  strategy?: RouteStrategy
 ): Promise<RouteServiceResult> {
   const service = createWebServiceRoutePlanning();
-  return service.planDrivingRouteWebService({ origin, destination, waypoints });
+  return service.planDrivingRouteWebService({ origin, destination, waypoints, strategy });
 }
 
 /**
