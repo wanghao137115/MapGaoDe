@@ -3066,7 +3066,7 @@ const MapPlayground: React.FC = () => {
             </div>
 
             {/* 地图主体（原有地图渲染） */}
-            <div style={{ width: '100%', height: '100%' }}>
+            <div style={{ width: '100%', height: '100%', position: 'relative' }}>
               <MapContainer
                 center={mapCenter}
                 zoom={zoom}
@@ -3177,6 +3177,31 @@ const MapPlayground: React.FC = () => {
                   />
                 )}
               </MapContainer>
+
+              {/* 在此区域搜索按钮：位于地图底部中间，距离底部约 50px */}
+              {showCategorySheet && showSearchInArea && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    bottom: 50,
+                    transform: 'translateX(-50%)',
+                    zIndex: 1100,
+                  }}
+                >
+                  <Button
+                    type="primary"
+                    onClick={() => fetchInViewTop20(activeCategory)}
+                    style={{
+                      backgroundColor: '#65a9fc',
+                      borderColor: '#65a9fc',
+                      borderRadius: 2,
+                    }}
+                  >
+                    在此区域搜索 {CATEGORY_CONFIG[activeCategory].label}
+                  </Button>
+                </div>
+              )}
 
               {/* 信息弹窗 */}
               <InfoWindow
