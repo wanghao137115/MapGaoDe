@@ -333,10 +333,9 @@ const MapContainer: React.FC<MapContainerProps> = ({
             const AMap = (window as any).AMap;
 
             console.log('🚗 MapContainer: AMap对象检查:', {
-                hasTileLayer: typeof AMap.TileLayer === 'function',
-                hasTraffic: typeof AMap.Traffic === 'function',
-                Traffic: AMap.Traffic,
-                allAMapKeys: Object.keys(AMap).filter(key => key.includes('Traffic') || key.includes('Tr') || key.includes('Layer')).join(', '),
+                hasTileLayer: !!AMap.TileLayer,
+                hasTileTraffic: !!AMap.TileLayer?.Traffic,
+                hasLegacyTraffic: typeof AMap.Traffic === 'function',
                 mapReady: !!map
             });
 
@@ -345,15 +344,25 @@ const MapContainer: React.FC<MapContainerProps> = ({
                 console.log('🚗 MapContainer: 路况模式启用');
                 if (!trafficLayerRef.current) {
                     try {
-                        if (typeof AMap.Traffic === 'function') {
-                            trafficLayerRef.current = new AMap.Traffic({
-                                map: map,
+                        // 优先使用 v2.0 的 TileLayer.Traffic（推荐）
+                        if (AMap.TileLayer && typeof AMap.TileLayer.Traffic === 'function') {
+                            const layer = new AMap.TileLayer.Traffic({
                                 autoRefresh: true,
                                 interval: 180
                             });
-                            console.log('✅ MapContainer: 路况图层创建成功');
+                            map.add(layer);
+                            trafficLayerRef.current = layer;
+                            console.log('✅ MapContainer: 路况图层创建成功（TileLayer.Traffic）');
+                        } else if (typeof AMap.Traffic === 'function') {
+                            // 兼容老版本 v1.x 的 AMap.Traffic
+                            trafficLayerRef.current = new AMap.Traffic({
+                                map,
+                                autoRefresh: true,
+                                interval: 180
+                            });
+                            console.log('✅ MapContainer: 路况图层创建成功（AMap.Traffic）');
                         } else {
-                            console.log('🚗 MapContainer: AMap.Traffic不存在，跳过路况功能');
+                            console.log('🚗 MapContainer: 未找到 Traffic 图层类，路况功能不可用');
                         }
                     } catch (e) {
                         console.log('🚗 MapContainer: 路况图层创建失败，跳过功能:', (e as Error).message);

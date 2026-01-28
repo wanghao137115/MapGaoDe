@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Popover, Input, Select } from "antd";
+import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Popover, Input, Select, Slider } from "antd";
 import { EnvironmentOutlined, FullscreenOutlined, GlobalOutlined, CarOutlined, RadarChartOutlined, AimOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
 import MapContainer from "@/components/Map/MapContainer";
 import MarkerLayer from "@/components/Map/MarkerLayer"; // 导入标记层组件
@@ -19,6 +19,7 @@ import type { MapPosition, Marker } from "@/types";
 
 const { Text } = Typography;
 const { Panel } = Collapse;
+const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
 
 // 添加路径规划服务导入
 import { planDrivingRoute, planWalkingRoute, planTransitRoute, planRidingRoute, planElectricRoute } from "@/services/map";
@@ -377,6 +378,11 @@ const MapPlayground: React.FC = () => {
   const [showTraffic, setShowTraffic] = useState<boolean>(false);
   const [measureMode, setMeasureMode] = useState<boolean>(false);
   const [showSubway, setShowSubway] = useState<boolean>(false);
+  const [trafficPanelVisible, setTrafficPanelVisible] = useState<boolean>(false);
+  const [trafficMode, setTrafficMode] = useState<'realtime' | 'forecast'>('realtime');
+  const [trafficWeekday, setTrafficWeekday] = useState<number>(new Date().getDay()); // 0-6, 周日=0
+  const [trafficHour, setTrafficHour] = useState<number>(new Date().getHours());
+  const trafficRefreshKey = `${trafficMode}-${trafficWeekday}-${trafficHour}`;
   // 地铁查询弹窗状态
   const [showSubwayModal, setShowSubwayModal] = useState<boolean>(false);
   // 卫星模式与路网显示状态
@@ -2799,22 +2805,26 @@ const MapPlayground: React.FC = () => {
               </div>
             )}
 
-            {/* 右上：功能区（固定） */}
+        {/* 右上：功能区（固定） */}
+        <div style={{
+          position: 'absolute',
+          right: 12,
+          top: 12,
+          zIndex: 1200,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: 10,
+        }}>
+          <Card size="small" style={{ borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,0.08)' }}>
+            {/* 横向工具条样式，图标 + 文本，竖直分隔线 */}
             <div style={{
-              position: 'absolute',
-              right: 12,
-              top: 12,
-              zIndex: 1200,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '6px 8px',
+              background: 'transparent'
             }}>
-              <Card size="small" style={{ borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,0.08)' }}>
-                {/* 横向工具条样式，图标 + 文本，竖直分隔线 */}
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '6px 8px',
-                  background: 'transparent'
-                }}>
                   {/* 缩放按钮 */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <Button size="small" onClick={() => setZoom(Math.max(3, zoom - 1))}>-</Button>
@@ -2871,11 +2881,17 @@ const MapPlayground: React.FC = () => {
 
                   {/* 路况 */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Button size="small" type={showTraffic ? 'primary' : 'default'} onClick={() => {
-                      const newValue = !showTraffic;
-                      console.log('🚗 路况按钮点击 - 当前状态:', showTraffic, '-> 新状态:', newValue);
-                      setShowTraffic(newValue);
-                    }} icon={<CarOutlined />}>
+                    <Button
+                      size="small"
+                      type={showTraffic ? 'primary' : 'default'}
+                      onClick={() => {
+                        const newValue = !showTraffic;
+                        console.log('🚗 路况按钮点击 - 当前状态:', showTraffic, '-> 新状态:', newValue);
+                        setShowTraffic(newValue);
+                        setTrafficPanelVisible(newValue);
+                      }}
+                      icon={<CarOutlined />}
+                    >
                       <span style={{ fontSize: 12 }}>路况</span>
                     </Button>
                   </div>
@@ -2919,6 +2935,134 @@ const MapPlayground: React.FC = () => {
                   </div>
                 </div>
               </Card>
+
+          {/* 路况实时/预测面板 */}
+          {trafficPanelVisible && (
+            <Card
+              size="small"
+              style={{
+                width: 280,
+                borderRadius: 8,
+                boxShadow: '0 6px 18px rgba(0,0,0,0.08)',
+                padding: 8,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                <Button
+                  type={trafficMode === 'realtime' ? 'primary' : 'default'}
+                  size="small"
+                  style={{ marginRight: 4 }}
+                  onClick={() => setTrafficMode('realtime')}
+                >
+                  实时
+                </Button>
+                <Button
+                  type={trafficMode === 'forecast' ? 'primary' : 'default'}
+                  size="small"
+                  onClick={() => setTrafficMode('forecast')}
+                >
+                  预测
+                </Button>
+                <div style={{ flex: 1 }} />
+                <span style={{ fontSize: 12, color: '#888' }}>
+                  畅通
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 14,
+                      height: 4,
+                      background: '#00aa00',
+                      borderRadius: 2,
+                      margin: '0 4px',
+                    }}
+                  />
+                  缓行
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 14,
+                      height: 4,
+                      background: '#ffcc00',
+                      borderRadius: 2,
+                      margin: '0 4px',
+                    }}
+                  />
+                  拥堵
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 14,
+                      height: 4,
+                      background: '#ff0000',
+                      borderRadius: 2,
+                      marginLeft: 4,
+                    }}
+                  />
+                </span>
+              </div>
+
+              {trafficMode === 'realtime' ? (
+                <div style={{ fontSize: 12, color: '#555' }}>当前显示为实时路况</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, marginBottom: 4 }}>
+                    预测时间：
+                    <span style={{ fontWeight: 500 }}>
+                      星期{WEEK_LABELS[trafficWeekday]} {trafficHour.toString().padStart(2, '0')}:00
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: 12,
+                      marginBottom: 4,
+                    }}
+                  >
+                    {WEEK_LABELS.map((label, idx) => {
+                      const isToday = idx === new Date().getDay();
+                      const isActive = idx === trafficWeekday;
+                      return (
+                        <span
+                          key={idx}
+                          style={{
+                            padding: '2px 4px',
+                            borderRadius: 4,
+                            cursor: 'pointer',
+                            color: isActive ? '#1890ff' : '#555',
+                            background: isActive ? 'rgba(24,144,255,0.08)' : 'transparent',
+                          }}
+                          onClick={() => setTrafficWeekday(idx)}
+                        >
+                          {label}
+                          {isToday && ' (今天)'}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 12, marginBottom: 2 }}>时间</div>
+                  <Slider
+                    min={0}
+                    max={23}
+                    step={1}
+                    value={trafficHour}
+                    onChange={(val) => {
+                      if (typeof val === 'number') {
+                        setTrafficHour(val);
+                      }
+                    }}
+                    marks={{
+                      0: '00',
+                      6: '06',
+                      12: '12',
+                      18: '18',
+                      24: '24',
+                    }}
+                  />
+                </>
+              )}
+            </Card>
+          )}
             </div>
 
             {/* 地图主体（原有地图渲染） */}
