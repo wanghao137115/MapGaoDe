@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Popover, Input } from "antd";
+import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Popover, Input, Select } from "antd";
 import { EnvironmentOutlined, FullscreenOutlined, GlobalOutlined, CarOutlined, RadarChartOutlined, AimOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
 import MapContainer from "@/components/Map/MapContainer";
 import MarkerLayer from "@/components/Map/MarkerLayer"; // 导入标记层组件
@@ -297,6 +297,81 @@ const MapPlayground: React.FC = () => {
   const [searchMarkers, setSearchMarkers] = useState<any[]>([]);
   // 确认的地点标记（星号）
   const [confirmedPlaceMarker, setConfirmedPlaceMarker] = useState<any>(null);
+  // 分类搜索：底部弹窗 + “在此区域搜索”
+  type CategoryKey = 'food' | 'hotel' | 'poi' | 'neigh';
+  const CATEGORY_IMAGE_URL =
+    'https://img.alicdn.com/i3/2207474112147/O1CN01ljnJS31RjNO9kIk0d_!!2207474112147-0-koubei.jpg?operate=merge&w=160&h=150&position=5';
+  const DEFAULT_AMAP_SERVICE_KEY = '49bfb83db90187047c48ccc2e711ea32';
+  const CATEGORY_CONFIG: Record<CategoryKey, { label: string; emoji: string; keywords: string }> = {
+    food: { label: '美食', emoji: '🍽️', keywords: '美食' },
+    hotel: { label: '酒店', emoji: '🏨', keywords: '酒店' },
+    poi: { label: '景点', emoji: '🏛️', keywords: '景点' },
+    neigh: { label: '小区', emoji: '🏘️', keywords: '小区' },
+  };
+  type CategoryItem = {
+    id: string;
+    name: string;
+    address?: string;
+    tel?: string;
+    location: { lng: number; lat: number };
+    distance?: number;
+    photoUrl: string;
+    rating: number; // 1.0 - 5.0 (mock)
+    cost: number; // per person (mock)
+  };
+  const mapRef = useRef<any>(null);
+  const [activeCategory, setActiveCategory] = useState<CategoryKey>('food');
+  const [showCategorySheet, setShowCategorySheet] = useState<boolean>(false);
+  const [categoryCollapsed, setCategoryCollapsed] = useState<boolean>(false);
+  const [categoryDetailItem, setCategoryDetailItem] = useState<CategoryItem | null>(null);
+  const [showSearchInArea, setShowSearchInArea] = useState<boolean>(false);
+  const [categoryLoading, setCategoryLoading] = useState<boolean>(false);
+  const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
+  const SEARCH_PANEL_WIDTH = 500;
+  const categoryPanelRef = useRef<HTMLDivElement | null>(null);
+  // “全城”筛选：深圳各区 + 代表地铁站分类（示例数据）
+  type DistrictKey = 'all' | 'futian' | 'nanshan' | 'luohu' | 'baoan' | 'longgang' | 'longhua';
+  const DISTRICT_CONFIG: Record<
+    Exclude<DistrictKey, 'all'>,
+    { name: string; center: { lng: number; lat: number }; stations: string[] }
+  > = {
+    futian: {
+      name: '福田区',
+      center: { lng: 114.055, lat: 22.541 },
+      stations: ['会展中心', '购物公园', '车公庙', '岗厦北'],
+    },
+    nanshan: {
+      name: '南山区',
+      center: { lng: 113.936, lat: 22.540 },
+      stations: ['科技园', '深大', '后海', '高新园'],
+    },
+    luohu: {
+      name: '罗湖区',
+      center: { lng: 114.131, lat: 22.548 },
+      stations: ['罗湖', '老街', '大剧院', '国贸'],
+    },
+    baoan: {
+      name: '宝安区',
+      center: { lng: 113.883, lat: 22.553 },
+      stations: ['宝安中心', '西乡', '翻身', '宝体'],
+    },
+    longgang: {
+      name: '龙岗区',
+      center: { lng: 114.246, lat: 22.721 },
+      stations: ['龙城广场', '南联', '吉祥', '双龙'],
+    },
+    longhua: {
+      name: '龙华区',
+      center: { lng: 114.044, lat: 22.696 },
+      stations: ['深圳北站', '红山', '龙华', '清湖'],
+    },
+  };
+  const [activeDistrict, setActiveDistrict] = useState<DistrictKey>('all');
+  const [activeStationTag, setActiveStationTag] = useState<string | null>(null);
+  const [districtPanelOpen, setDistrictPanelOpen] = useState<boolean>(false);
+  const [sortMode, setSortMode] = useState<'recommend' | 'distance' | 'rating'>('recommend');
+  const pendingNavigateRef = useRef<CategoryItem | null>(null);
+  const suppressNextCategoryCollapseRef = useRef<boolean>(false);
 
   // 新增右上工具栏的状态：路况、测距、地铁
   const [showTraffic, setShowTraffic] = useState<boolean>(false);
@@ -648,8 +723,421 @@ const MapPlayground: React.FC = () => {
   
   // 地图准备完成的回调
   const handleMapReady = useCallback((map: any) => {
-    // 地图准备就绪，可以在这里添加初始化逻辑
+    // 保存地图实例，用于可视区域搜索 / 缩放自适应半径
+    mapRef.current = map;
   }, []);
+
+  // 分类弹窗打开时：地图拖动/缩放后显示 “在此区域搜索”
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!showCategorySheet) return;
+
+    const onMoveOrZoomEnd = () => setShowSearchInArea(true);
+    const onMapInteract = () => {
+      if (suppressNextCategoryCollapseRef.current) {
+        suppressNextCategoryCollapseRef.current = false;
+        return;
+      }
+      setCategoryCollapsed(true);
+    };
+    try {
+      map.on?.('moveend', onMoveOrZoomEnd);
+      map.on?.('zoomend', onMoveOrZoomEnd);
+      // 用户开始操作地图就先收起分类块（hover 可再展开）
+      map.on?.('movestart', onMapInteract);
+      map.on?.('zoomstart', onMapInteract);
+      map.on?.('dragstart', onMapInteract);
+    } catch (e) {
+      // ignore
+    }
+    return () => {
+      try {
+        map.off?.('moveend', onMoveOrZoomEnd);
+        map.off?.('zoomend', onMoveOrZoomEnd);
+        map.off?.('movestart', onMapInteract);
+        map.off?.('zoomstart', onMapInteract);
+        map.off?.('dragstart', onMapInteract);
+      } catch (e) {
+        // ignore
+      }
+    };
+  }, [showCategorySheet]);
+
+  // 点击分类块以外区域（包括地图）时，收起分类块
+  React.useEffect(() => {
+    if (!showCategorySheet) return;
+    const onDown = (e: MouseEvent) => {
+      const el = categoryPanelRef.current;
+      const target = e.target as Node | null;
+      if (!el || !target) return;
+      if (!el.contains(target)) {
+        setCategoryCollapsed(true);
+        setDistrictPanelOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [showCategorySheet]);
+
+  // 调试：观察收起状态变化
+  React.useEffect(() => {
+    console.log('[Category] categoryCollapsed changed =>', categoryCollapsed);
+  }, [categoryCollapsed]);
+
+  const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+  // 简单的可复现“随机”生成器（基于字符串 hash）
+  const hashToUnit = (s: string) => {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    // 0..1
+    return (h >>> 0) / 4294967295;
+  };
+  const mockRating = (seed: string) => {
+    const u = hashToUnit(seed);
+    // 3.0 ~ 5.0
+    return Math.round((3 + u * 2) * 10) / 10;
+  };
+  const mockCost = (seed: string) => {
+    const u = hashToUnit(seed + 'cost');
+    // 20 ~ 200
+    return Math.round(20 + u * 180);
+  };
+  const haversineMeters = (a: { lng: number; lat: number }, b: { lng: number; lat: number }) => {
+    const R = 6371000;
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+    const x =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.asin(Math.sqrt(x));
+  };
+
+  const randomBetween = (seed: string, min: number, max: number) => {
+    const u = hashToUnit(seed);
+    return min + u * (max - min);
+  };
+
+  const mockItemsNear = (category: CategoryKey, base: { lng: number; lat: number }, spreadMeters: number) => {
+    const cfg = CATEGORY_CONFIG[category];
+    // roughly convert meters to degrees (lat); lng depends on latitude
+    const metersToLat = (m: number) => m / 111000;
+    const metersToLng = (m: number) => m / (111000 * Math.cos((base.lat * Math.PI) / 180));
+
+    return Array.from({ length: 20 }).map((_, idx) => {
+      const id = `mock-${category}-${base.lng.toFixed(4)}-${base.lat.toFixed(4)}-${idx}`;
+      const dx = randomBetween(id + '-dx', -spreadMeters, spreadMeters);
+      const dy = randomBetween(id + '-dy', -spreadMeters, spreadMeters);
+      const loc = {
+        lng: base.lng + metersToLng(dx),
+        lat: base.lat + metersToLat(dy),
+      };
+      const name = `${idx + 1}. ${cfg.label}店${idx + 1}`;
+      return {
+        id,
+        name,
+        address: `模拟地址 ${idx + 1} 号`,
+        tel: `138${String(10000000 + Math.floor(hashToUnit(id) * 89999999)).slice(0, 8)}`,
+        location: loc,
+        photoUrl: CATEGORY_IMAGE_URL,
+        rating: mockRating(id),
+        cost: mockCost(id),
+        distance: Math.round(haversineMeters(base, loc)),
+      } as CategoryItem;
+    });
+  };
+
+  const mockItemsInBounds = (category: CategoryKey, bounds: any) => {
+    const cfg = CATEGORY_CONFIG[category];
+    const sw = bounds.getSouthWest?.();
+    const ne = bounds.getNorthEast?.();
+    if (!sw || !ne) return [];
+
+    return Array.from({ length: 20 }).map((_, idx) => {
+      const id = `mockb-${category}-${sw.lng.toFixed(3)}-${sw.lat.toFixed(3)}-${ne.lng.toFixed(3)}-${ne.lat.toFixed(3)}-${idx}`;
+      const lng = randomBetween(id + '-lng', sw.lng, ne.lng);
+      const lat = randomBetween(id + '-lat', sw.lat, ne.lat);
+      const name = `${idx + 1}. ${cfg.label}店${idx + 1}`;
+      return {
+        id,
+        name,
+        address: `模拟地址（可视范围）${idx + 1} 号`,
+        tel: `139${String(10000000 + Math.floor(hashToUnit(id) * 89999999)).slice(0, 8)}`,
+        location: { lng, lat },
+        photoUrl: CATEGORY_IMAGE_URL,
+        rating: mockRating(id),
+        cost: mockCost(id),
+      } as CategoryItem;
+    });
+  };
+  const computeRadiusFromView = (map: any) => {
+    try {
+      const bounds = map.getBounds?.();
+      if (!bounds) return 5000;
+      const sw = bounds.getSouthWest?.();
+      const ne = bounds.getNorthEast?.();
+      if (!sw || !ne) return 5000;
+      const diag = haversineMeters({ lng: sw.lng, lat: sw.lat }, { lng: ne.lng, lat: ne.lat });
+      // 半个对角线作为 radius，适当放大一点覆盖屏幕
+      const r = Math.round(diag * 0.6);
+      return clamp(r, 800, 20000);
+    } catch (e) {
+      return 5000;
+    }
+  };
+
+  const buildCategoryMarkers = (items: CategoryItem[], category: CategoryKey) => {
+    const cfg = CATEGORY_CONFIG[category];
+    return items.map((it, idx) => ({
+      id: `cat-${category}-${it.id}`,
+      type: 'store' as const,
+      title: `${idx + 1}. ${it.name}`,
+      position: it.location,
+      icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      data: {
+        address: it.address,
+        phone: it.tel,
+        category: cfg.label,
+        rank: idx + 1,
+        rating: it.rating,
+        cost: it.cost,
+        distance: it.distance,
+      },
+    }));
+  };
+
+  const selectCategoryItemForDetail = (item: CategoryItem) => {
+    console.log('[Category] select item for detail:', item.name);
+    // 列表点击会触发程序性 setMapCenter/setZoom，避免 map 事件把弹窗误切到收起态
+    suppressNextCategoryCollapseRef.current = true;
+    setCategoryDetailItem(item);
+    setCategoryCollapsed(false);
+    setDistrictPanelOpen(false);
+    setShowSearchInArea(false);
+    // 给选中的 marker 加可视化 label（其余清空）
+    setSearchMarkers((prev) =>
+      (prev || []).map((m: any) => {
+        const nextData = { ...(m.data || {}) };
+        if (String(m.title || '').includes(item.name) || m.id?.endsWith?.(item.id)) {
+          nextData.labelText = item.name;
+        } else {
+          delete nextData.labelText;
+        }
+        return { ...m, data: nextData };
+      }),
+    );
+  };
+
+  const startNavigateTo = async (item: CategoryItem) => {
+    // 进入路线模式：直接关闭分类弹窗，避免地图联动触发“收起态提示条”
+    setShowCategorySheet(false);
+    setCategoryCollapsed(false);
+    setDistrictPanelOpen(false);
+    setCategoryDetailItem(null);
+
+    // 打开路线面板并自动规划默认路线（驾车）
+    setShowRoutePanel(true);
+    setRouteMode('driving');
+    setDestText(item.name);
+    setDestLocation(item.location);
+    setOriginText('我的位置');
+
+    if (!position) {
+      pendingNavigateRef.current = item;
+      getCurrentPosition();
+      return;
+    }
+
+    setOriginLocation(position);
+    const params: RoutePlanningParams = {
+      origin: position,
+      destination: item.location,
+      mode: 'driving',
+      strategy: RouteStrategy.FASTEST,
+    } as any;
+    await handlePlanRoute(params);
+  };
+
+  const applySortToItems = (items: CategoryItem[], mode: 'recommend' | 'distance' | 'rating') => {
+    if (mode === 'recommend') return items;
+    const center = mapRef.current?.getCenter?.() || mapCenter;
+    const withDistance = items.map((it) => ({
+      ...it,
+      distance:
+        typeof it.distance === 'number'
+          ? it.distance
+          : Math.round(haversineMeters({ lng: center.lng, lat: center.lat }, it.location)),
+    }));
+    if (mode === 'distance') {
+      return [...withDistance].sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+    }
+    // rating
+    return [...withDistance].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  };
+
+  // 默认：全城推荐 Top20（使用 text 搜索 + citylimit）
+  const fetchCityTop20 = useCallback(
+    async (category: CategoryKey) => {
+      const cfg = CATEGORY_CONFIG[category];
+      const key =
+        import.meta.env.VITE_AMAP_SERVICE_KEY ||
+        import.meta.env.VITE_AMAP_KEY ||
+        DEFAULT_AMAP_SERVICE_KEY;
+
+      const city = currentCityAdcode || currentCity;
+      setCategoryLoading(true);
+      try {
+        const params = new URLSearchParams({
+          key,
+          // 如果选中了具体区或地铁站标签，就把它们拼到关键字里，做一个“区内 + 类型”的推荐搜索
+          keywords:
+            activeDistrict !== 'all'
+              ? `${DISTRICT_CONFIG[activeDistrict as Exclude<DistrictKey, 'all'>].name}${
+                  activeStationTag || cfg.keywords
+                }`
+              : cfg.keywords,
+          city: String(city),
+          citylimit: 'true',
+          offset: '20',
+          page: '1',
+          extensions: 'all',
+        });
+        const res = await fetch(`https://restapi.amap.com/v3/place/text?${params}`);
+        const data = await res.json();
+        if (data.status === '1' && Array.isArray(data.pois)) {
+          const list: CategoryItem[] = data.pois.slice(0, 20).map((p: any) => {
+            const [lngStr, latStr] = String(p.location || '').split(',');
+            const id = String(p.id || `${p.name}-${lngStr}-${latStr}`);
+            return {
+              id,
+              name: p.name,
+              address: p.address || p.adname || '',
+              tel: p.tel,
+              location: { lng: parseFloat(lngStr), lat: parseFloat(latStr) },
+              photoUrl: CATEGORY_IMAGE_URL,
+              rating: mockRating(id),
+              cost: mockCost(id),
+            };
+          });
+          const sorted = applySortToItems(list, sortMode);
+          setCategoryItems(sorted);
+          setSearchMarkers(buildCategoryMarkers(sorted, category));
+          setConfirmedPlaceMarker(null);
+          setShowSearchInArea(false);
+        } else {
+          setCategoryItems([]);
+          setSearchMarkers([]);
+          message.warning(`未找到${cfg.label}结果`);
+        }
+      } catch (e) {
+        console.error(e);
+        message.error(`加载${cfg.label}失败`);
+      } finally {
+        setCategoryLoading(false);
+      }
+    },
+    [activeDistrict, activeStationTag, currentCityAdcode, currentCity, setSearchMarkers, sortMode],
+  );
+
+  // “在此区域搜索”：按当前可视范围（bounds）取 Top20
+  const fetchInViewTop20 = useCallback(
+    async (category: CategoryKey) => {
+      const map = mapRef.current;
+      const cfg = CATEGORY_CONFIG[category];
+      const key =
+        import.meta.env.VITE_AMAP_SERVICE_KEY ||
+        import.meta.env.VITE_AMAP_KEY ||
+        DEFAULT_AMAP_SERVICE_KEY;
+      if (!map) {
+        message.warning('地图未就绪');
+        return;
+      }
+
+      setCategoryLoading(true);
+      try {
+        const bounds = map.getBounds?.();
+        const sw = bounds?.getSouthWest?.();
+        const ne = bounds?.getNorthEast?.();
+        const center = map.getCenter?.();
+        if (!sw || !ne || !center) {
+          message.warning('无法获取当前可视区域');
+          return;
+        }
+
+        const radius = computeRadiusFromView(map);
+        // 推荐排序：sortrule=1（权重）；若接口不支持也会回退为默认顺序
+        const params = new URLSearchParams({
+          key,
+          location: `${center.lng},${center.lat}`,
+          keywords: cfg.keywords,
+          radius: String(radius),
+          offset: '50',
+          page: '1',
+          extensions: 'all',
+          sortrule: '1',
+        });
+        const res = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
+        const data = await res.json();
+        if (!(data.status === '1' && Array.isArray(data.pois))) {
+          setCategoryItems([]);
+          setSearchMarkers([]);
+          message.warning(`未找到${cfg.label}结果`);
+          return;
+        }
+
+        // 先按“推荐/权重”返回顺序，前端过滤进可视范围，再取前 20
+        const list: CategoryItem[] = data.pois
+          .map((p: any) => {
+            const [lngStr, latStr] = String(p.location || '').split(',');
+            const lng = parseFloat(lngStr);
+            const lat = parseFloat(latStr);
+            return {
+              raw: p,
+              lng,
+              lat,
+              ok: lng >= sw.lng && lng <= ne.lng && lat >= sw.lat && lat <= ne.lat,
+            };
+          })
+          .filter((x: any) => x.ok)
+          .slice(0, 20)
+          .map((x: any) => {
+            const p = x.raw;
+            const id = String(p.id || `${p.name}-${x.lng}-${x.lat}`);
+            return {
+              id,
+              name: p.name,
+              address: p.address || p.adname || '',
+              tel: p.tel,
+              distance: typeof p.distance === 'string' || typeof p.distance === 'number' ? Number(p.distance) : undefined,
+              location: { lng: x.lng, lat: x.lat },
+              photoUrl: CATEGORY_IMAGE_URL,
+              rating: mockRating(id),
+              cost: mockCost(id),
+            };
+          });
+
+        const sorted = applySortToItems(list, sortMode);
+        setCategoryItems(sorted);
+        setSearchMarkers(buildCategoryMarkers(sorted, category));
+        setConfirmedPlaceMarker(null);
+        setShowSearchInArea(false);
+      } catch (e) {
+        console.error(e);
+        message.error(`在此区域搜索${cfg.label}失败`);
+      } finally {
+        setCategoryLoading(false);
+      }
+    },
+    [setSearchMarkers, sortMode],
+  );
 
   // 卫星模式下路网显示效果联动（尝试添加/移除覆盖层，带兼容性保护）
   React.useEffect(() => {
@@ -868,6 +1356,39 @@ const MapPlayground: React.FC = () => {
       message.success('定位成功，已移动到您的位置');
     }
   }, [position, setCenter, originLocation]);
+
+  // 如果用户点击“到这去”时尚未有定位，等定位回来后自动继续规划路线
+  React.useEffect(() => {
+    const pending = pendingNavigateRef.current;
+    if (!pending) return;
+    if (!position) return;
+    pendingNavigateRef.current = null;
+    (async () => {
+      try {
+        // 如果是从“到这去”触发的定位回调，确保分类弹窗已关闭
+        setShowCategorySheet(false);
+        setCategoryCollapsed(false);
+        setDistrictPanelOpen(false);
+        setCategoryDetailItem(null);
+
+        setOriginText('我的位置');
+        setOriginLocation(position);
+        setDestText(pending.name);
+        setDestLocation(pending.location);
+        setShowRoutePanel(true);
+        setRouteMode('driving');
+        const params: RoutePlanningParams = {
+          origin: position,
+          destination: pending.location,
+          mode: 'driving',
+          strategy: RouteStrategy.FASTEST,
+        } as any;
+        await handlePlanRoute(params);
+      } catch (e) {
+        // ignore
+      }
+    })();
+  }, [position]);
 
   // 添加测试标记功能（修正位置计算）
   const handleAddTestMarker = useCallback(() => {
@@ -1251,17 +1772,31 @@ const MapPlayground: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 搜索框（包含历史下拉） */}
+                {/* 搜索框（包含历史下拉与分类弹窗） */}
                 <div
-                  style={{ minWidth: 260, position: 'relative' }}
+                  style={{ width: SEARCH_PANEL_WIDTH }}
                   tabIndex={-1}
-                  onMouseDown={() => setHistoryVisible(true)}
-                  onClickCapture={() => setHistoryVisible(true)}
-                  onFocusCapture={() => setHistoryVisible(true)}
+                  onMouseDown={() => {
+                    if (!searchQuery.trim()) setHistoryVisible(true);
+                  }}
+                  onClickCapture={() => {
+                    if (!searchQuery.trim()) setHistoryVisible(true);
+                    if (showRoutePanel) {
+                      setShowRoutePanel((v) => !v);
+                    }
+                  }}
+                  onFocusCapture={() => {
+                    if (!searchQuery.trim()) setHistoryVisible(true);
+                  }}
                   onBlur={() => setTimeout(() => setHistoryVisible(false), 150)}
                 >
                   <PlaceSearch
                     style={{ width: '100%' }}
+                    value={searchQuery}
+                    onValueChange={(v) => {
+                      setSearchQuery(v);
+                      if (v.trim()) setHistoryVisible(false);
+                    }}
                     onPlaceSelect={(place: any) => {
                       // 将选择的 place 临时加入历史顶部（不会重复）
                       try {
@@ -1273,6 +1808,7 @@ const MapPlayground: React.FC = () => {
                         };
                         addToHistory(histItem);
                         setSearchQuery(place.name || '');
+                        setHistoryVisible(false);
                       } catch (e) { /* ignore */ }
                     }}
                     onPlaceConfirm={(place: any) => {
@@ -1282,81 +1818,559 @@ const MapPlayground: React.FC = () => {
                   />
 
                   {/* 历史与分类下拉 - 始终渲染，通过样式控制展开收起以实现动画 */}
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: 44,
-                      left: 0,
-                      width: '100%',
-                      background: '#fff',
-                      borderRadius: 6,
-                      boxShadow: '0 8px 20px rgba(0,0,0,0.12)',
-                      zIndex: 1300,
-                      maxHeight: historyVisible ? 320 : 0,
-                      opacity: historyVisible ? 1 : 0,
-                      transform: historyVisible ? 'translateY(0)' : 'translateY(-4px)',
-                      transition: 'max-height 240ms ease, opacity 180ms ease, transform 180ms ease',
-                      overflow: 'hidden',
-                      pointerEvents: historyVisible ? 'auto' : 'none',
-                    }}
-                  >
-                    <div style={{ padding: historyVisible ? 8 : 0 }}>
-                      {/* 顶部四个分类图标 */}
-                      <div style={{ display: 'flex', gap: 8, padding: '6px 4px', marginBottom: 6 }}>
-                        {[
-                          { key: 'hotel', label: '酒店', emoji: '🏨' },
-                          { key: 'food', label: '美食', emoji: '🍽️' },
-                          { key: 'poi', label: '景点', emoji: '🏛️' },
-                          { key: 'neigh', label: '小区', emoji: '🏘️' },
-                        ].map((c) => (
-                          <div key={c.key} onMouseDown={(e) => e.preventDefault()} onClick={() => {
-                            setSearchQuery(c.label);
-                            message.info(`选择分类: ${c.label}`);
-                            // optional: focus the PlaceSearch input if it exposes a ref
-                          }} style={{ flex: '1 1 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: 6, cursor: 'pointer' }}>
-                            <div style={{ width: 44, height: 44, borderRadius: 8, background: '#fafafa', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>
-                              <span>{c.emoji}</span>
-                            </div>
-                            <div style={{ fontSize: 12, color: '#333' }}>{c.label}</div>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* 搜索记录标题与清空 */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, padding: '0 6px' }}>
-                        <div style={{ fontWeight: 600 }}>搜索记录</div>
-                        <Button size="small" onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); clearHistory(); }}>清空</Button>
-                      </div>
-
-                      {/* 历史列表（可为空） */}
-                      <div style={{ maxHeight: 180, overflow: 'auto' }}>
-                        {(searchHistory && searchHistory.length > 0) ? (
-                          (searchHistory || []).map((h) => (
+                  {!showCategorySheet && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 60,
+                        left: 0,
+                        width: SEARCH_PANEL_WIDTH,
+                        background: '#fff',
+                        borderRadius: 6,
+                        boxShadow: '0 8px 20px rgba(0,0,0,0.12)',
+                        zIndex: 1300,
+                        maxHeight: historyVisible ? 320 : 0,
+                        opacity: historyVisible ? 1 : 0,
+                        transform: historyVisible ? 'translateY(0)' : 'translateY(-4px)',
+                        transition: 'max-height 240ms ease, opacity 180ms ease, transform 180ms ease',
+                        overflow: 'hidden',
+                        pointerEvents: historyVisible ? 'auto' : 'none',
+                      }}
+                    >
+                      <div style={{ padding: historyVisible ? 8 : 0 }}>
+                        {/* 顶部四个分类图标 */}
+                        <div style={{ display: 'flex', gap: 8, padding: '6px 4px', marginBottom: 6 }}>
+                          {([
+                            { key: 'hotel', label: '酒店', emoji: '🏨' },
+                            { key: 'food', label: '美食', emoji: '🍽️' },
+                            { key: 'poi', label: '景点', emoji: '🏛️' },
+                            { key: 'neigh', label: '小区', emoji: '🏘️' },
+                          ] as Array<{ key: CategoryKey; label: string; emoji: string }>).map((c) => (
                             <div
-                              key={h.id}
-                              onMouseDown={(e) => { e.preventDefault(); handleHistoryClick(h); }}
-                              style={{ padding: '8px 6px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                              key={c.key}
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                setHistoryVisible(false);
+                                setShowCategorySheet(true);
+                                setActiveCategory(c.key);
+                                setShowSearchInArea(true); // 显示“在此区域搜索”按钮
+                              setCategoryCollapsed(false);
+                              setDistrictPanelOpen(false);
+                                fetchCityTop20(c.key); // 默认全城推荐 Top20
+                              }}
+                              style={{
+                                flex: '1 1 0',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                gap: 6,
+                                padding: 6,
+                                cursor: 'pointer',
+                                borderRadius: 10,
+                                background: '#fafafa',
+                              }}
                             >
-                              <div>
-                                <div style={{ fontSize: 13 }}>{h.name}</div>
-                                {h.address && <div style={{ fontSize: 12, color: '#888' }}>{h.address}</div>}
-                              </div>
-                              <Button
-                                size="small"
-                                danger
-                                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); removeHistoryItem(h.id); }}
-                                style={{ marginLeft: 8 }}
+                              <div
+                                style={{
+                                  width: 44,
+                                  height: 44,
+                                  borderRadius: 8,
+                                  background: '#fff',
+                                  border: '1px solid #eee',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: 20,
+                                }}
                               >
-                                ×
-                              </Button>
+                                <span>{c.emoji}</span>
+                              </div>
+                              <div style={{ fontSize: 12, color: '#333' }}>{c.label}</div>
                             </div>
-                          ))
-                        ) : (
-                          <div style={{ padding: '8px 6px', color: '#888' }}>暂无搜索记录</div>
-                        )}
+                          ))}
+                        </div>
+
+                        {/* 搜索记录标题与清空 */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, padding: '0 6px' }}>
+                          <div style={{ fontWeight: 600 }}>搜索记录</div>
+                          <Button size="small" onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); clearHistory(); }}>清空</Button>
+                        </div>
+
+                        {/* 历史列表（可为空） */}
+                        <div style={{ maxHeight: 180, overflow: 'auto' }}>
+                          {(searchHistory && searchHistory.length > 0) ? (
+                            (searchHistory || []).map((h) => (
+                              <div
+                                key={h.id}
+                                onMouseDown={(e) => { e.preventDefault(); handleHistoryClick(h); }}
+                                style={{ padding: '8px 6px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                              >
+                                <div>
+                                  <div style={{ fontSize: 13 }}>{h.name}</div>
+                                  {h.address && <div style={{ fontSize: 12, color: '#888' }}>{h.address}</div>}
+                                </div>
+                                <Button
+                                  size="small"
+                                  danger
+                                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); removeHistoryItem(h.id); }}
+                                  style={{ marginLeft: 8 }}
+                                >
+                                  ×
+                                </Button>
+                              </div>
+                            ))
+                          ) : (
+                            <div style={{ padding: '8px 6px', color: '#888' }}>暂无搜索记录</div>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
+
+                  {/* 分类搜索结果弹窗：紧贴搜索框下方，宽度与搜索框一致 */}
+                  {showCategorySheet && (
+                    <div
+                      ref={categoryPanelRef}
+                      style={{
+                        position: 'absolute',
+                        top: 60,
+                        left: 0,
+                        width: SEARCH_PANEL_WIDTH,
+                        background: '#fff',
+                        borderRadius: 6,
+                        boxShadow: '0 8px 20px rgba(0,0,0,0.16)',
+                        zIndex: 1400,
+                        maxHeight: '70vh',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {/* 收起态：提示条（hover 后展开） */}
+                      {categoryCollapsed && (
+                        <div
+                          style={{
+                            padding: '10px 12px',
+                            fontSize: 12,
+                            color: '#333',
+                            background: '#fff',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            borderBottom: '1px solid #f0f0f0',
+                          }}
+                          onMouseEnter={() => setCategoryCollapsed(false)}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => setCategoryCollapsed(false)}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontWeight: 600 }}>{CATEGORY_CONFIG[activeCategory].label}</span>
+                            <span style={{ color: '#999' }}>
+                              {activeDistrict === 'all'
+                                ? '展开搜索结果'
+                                : `${DISTRICT_CONFIG[activeDistrict as Exclude<DistrictKey, 'all'>].name}${activeStationTag ? ` · ${activeStationTag}` : ''} · 展开搜索结果`}
+                            </span>
+                          </div>
+                          <span style={{ color: '#1677ff',paddingRight: 50}}>展开 ▾</span>
+                        </div>
+                      )}
+
+                      {/* 收起态：独立的关闭按钮（绝对定位，不放在提示条内部，避免 hover 误触） */}
+                      {categoryCollapsed && (
+                        <Button
+                          size="small"
+                          type="primary"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setShowCategorySheet(false);
+                            setCategoryCollapsed(false);
+                            setDistrictPanelOpen(false);
+                            setCategoryDetailItem(null);
+                            setShowSearchInArea(false);
+                            setShowRoutePanel(false);
+                            setHistoryVisible(false);
+                          }}
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            width: 50,
+                            height: 40,
+                            padding: 0,
+                            minWidth: 26,
+                            lineHeight: '26px',
+                            boxShadow: '0 8px 18px rgba(0,0,0,0.18)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            zIndex: 5,
+                          }}
+                        >
+                          ×
+                        </Button>
+                      )}
+
+                      {/* 展开态内容 */}
+                      {!categoryCollapsed && !categoryDetailItem && (
+                        <>
+                          {/* 顶部筛选条（相对定位：承载绝对定位的下滑块） */}
+                          <div style={{ position: 'relative', borderBottom: '1px solid #f0f0f0' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 8,
+                            padding: '8px 10px',
+                            fontSize: 12,
+                            color: '#333',
+                            background: '#fff',
+                          }}
+                        >
+                          {/* 全城筛选：点击展开区 + 地铁站分类 */}
+                          <div
+                            style={{
+                              flex: 1,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4,
+                            }}
+                            onClick={() => {
+                              setDistrictPanelOpen((v) => !v);
+                            }}
+                          >
+                            <span>
+                              {activeDistrict === 'all'
+                                ? '全城'
+                                : DISTRICT_CONFIG[activeDistrict as Exclude<DistrictKey, 'all'>].name}
+                            </span>
+                            <span>▾</span>
+                          </div>
+                          <div style={{ flex: 1, textAlign: 'center' }}>
+                            {CATEGORY_CONFIG[activeCategory].label} ▾
+                          </div>
+                        <div style={{ flex: 1, textAlign: 'right' }}>
+                          <Select
+                            size="small"
+                            value={sortMode}
+                            onChange={(v) => {
+                              setSortMode(v);
+                              // 直接对当前列表重排（不额外请求）
+                              const sorted = applySortToItems(categoryItems, v);
+                              setCategoryItems(sorted);
+                              setSearchMarkers(buildCategoryMarkers(sorted, activeCategory));
+                            }}
+                            options={[
+                              { value: 'recommend', label: '推荐排序' },
+                              { value: 'distance', label: '距离优先' },
+                              { value: 'rating', label: '评分优先' },
+                            ]}
+                            style={{ width: 110 }}
+                          />
+                          </div>
+                        </div>
+
+                        {/* 绝对定位下滑块：左侧区 / 右侧地铁站 */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: 34, // 约等于顶部筛选条高度
+                            left: 0,
+                            right: 0,
+                            background: '#fff',
+                            borderBottom: '1px solid #f5f5f5',
+                            boxShadow: '0 10px 20px rgba(0,0,0,0.50)',
+                            maxHeight: districtPanelOpen ? 260 : 0,
+                            opacity: districtPanelOpen ? 1 : 0,
+                            transform: districtPanelOpen ? 'translateY(0)' : 'translateY(-6px)',
+                            transition: 'max-height 220ms ease, opacity 180ms ease, transform 180ms ease',
+                            pointerEvents: districtPanelOpen ? 'auto' : 'none',
+                            zIndex: 2,
+                          }}
+                        >
+                          <div style={{ display: 'flex', height: 260 }}>
+                            {/* 左侧：区域 */}
+                            <div
+                              style={{
+                                width: 120,
+                                borderRight: '1px solid #f0f0f0',
+                                overflow: 'auto',
+                                padding: 6,
+                                background: '#fafafa',
+                              }}
+                            >
+                              {([
+                                { key: 'all' as DistrictKey, label: '附近' },
+                                { key: 'futian' as DistrictKey, label: '福田区' },
+                                { key: 'luohu' as DistrictKey, label: '罗湖区' },
+                                { key: 'nanshan' as DistrictKey, label: '南山区' },
+                                { key: 'baoan' as DistrictKey, label: '宝安区' },
+                                { key: 'longgang' as DistrictKey, label: '龙岗区' },
+                                { key: 'longhua' as DistrictKey, label: '龙华区' },
+                              ]).map((d) => {
+                                const active = activeDistrict === d.key;
+                                return (
+                                  <div
+                                    key={d.key}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => {
+                                      setActiveDistrict(d.key);
+                                      setActiveStationTag(null);
+
+                                      if (d.key === 'all') {
+                                        fetchCityTop20(activeCategory);
+                                        return;
+                                      }
+
+                                      const info = DISTRICT_CONFIG[d.key as Exclude<DistrictKey, 'all'>];
+                                      setMapCenter(info.center);
+                                      setZoom(13);
+                                      fetchCityTop20(activeCategory);
+                                    }}
+                                    style={{
+                                      padding: '8px 8px',
+                                      borderRadius: 6,
+                                      cursor: 'pointer',
+                                      background: active ? '#e6f4ff' : 'transparent',
+                                      color: active ? '#1677ff' : '#333',
+                                      fontSize: 12,
+                                    }}
+                                  >
+                                    {d.label}
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* 右侧：地铁站 */}
+                            <div style={{ flex: 1, overflow: 'auto', padding: 8 }}>
+
+                              {activeDistrict === 'all' ? (
+                                <div style={{ fontSize: 12, color: '#999', padding: '6px 0' }}>
+                                  选择左侧区域后可按地铁站筛选
+                                </div>
+                              ) : (
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
+                                  {DISTRICT_CONFIG[activeDistrict as Exclude<DistrictKey, 'all'>].stations.map((s: string) => {
+                                    const active = activeStationTag === s;
+                                    return (
+                                      <div
+                                        key={s}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => {
+                                          setActiveStationTag((prev) => (prev === s ? null : s));
+                                          setTimeout(() => fetchCityTop20(activeCategory), 0);
+                                        }}
+                                        style={{
+                                          fontSize: 12,
+                                          padding: '6px 6px',
+                                          borderRadius: 6,
+                                          border: active ? '1px solid #52c41a' : '1px solid transparent',
+                                          background: active ? 'rgba(82,196,26,0.10)' : '#fff',
+                                          cursor: 'pointer',
+                                          color: '#333',
+                                          textAlign: 'center',
+                                          whiteSpace: 'nowrap',
+                                          overflow: 'hidden',
+                                          textOverflow: 'ellipsis',
+                                        }}
+                                        title={s}
+                                      >
+                                        {s}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 列表 */}
+                      <div
+                        style={{
+                          overflow: 'auto',
+                          padding: '6px 10px 8px',
+                          // 下滑块为绝对定位，给列表让出空间，避免被遮挡
+                          paddingTop: districtPanelOpen ? 266 : 6,
+                        }}
+                      >
+                        {categoryLoading ? (
+                          <div style={{ padding: 8, fontSize: 13, color: '#666' }}>加载中...</div>
+                        ) : (
+                          categoryItems.map((it, idx) => (
+                            <div
+                              key={it.id}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setMapCenter(it.location);
+                                setZoom(16);
+                                selectCategoryItemForDetail(it);
+                              }}
+                              style={{
+                                display: 'flex',
+                                gap: 8,
+                                padding: '10px 0',
+                                borderBottom: '1px solid #f5f5f5',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <div style={{ width: 18, color: '#666', fontSize: 12, marginTop: 2 }}>
+                                {idx + 1}.
+                              </div>
+
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    color: '#111',
+                                    marginBottom: 4,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                >
+                                  {it.name}
+                                </div>
+
+                                <div style={{ fontSize: 11, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ color: '#ff4d4f' }}>
+                                    {'★'.repeat(Math.max(1, Math.min(5, Math.round(it.rating))))}
+                                    <span style={{ color: '#ddd' }}>
+                                      {'★'.repeat(Math.max(0, 5 - Math.round(it.rating)))}
+                                    </span>
+                                  </span>
+                                  <span style={{ color: '#999' }}>人均: ¥{it.cost}</span>
+                                  {typeof it.distance === 'number' && (
+                                    <span style={{ color: '#999' }}>
+                                      {it.distance < 1000 ? `${it.distance}m` : `${(it.distance / 1000).toFixed(1)}km`}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div style={{ fontSize: 11, color: '#666', lineHeight: 1.4 }}>
+                                  {it.address || '--'}
+                                </div>
+                              </div>
+
+                              <div
+                                style={{
+                                  width: 68,
+                                  height: 68,
+                                  borderRadius: 8,
+                                  background: '#f5f5f5',
+                                  overflow: 'hidden',
+                                  flexShrink: 0,
+                                  border: '1px solid #eee',
+                                }}
+                              >
+                                <img
+                                  src={it.photoUrl}
+                                  alt=""
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                                />
+                              </div>
+                            </div>
+                          ))
+                        )}
+
+                        {!categoryLoading && categoryItems.length === 0 && (
+                          <div style={{ padding: 8, fontSize: 13, color: '#666' }}>暂无结果</div>
+                        )}
+                      </div>
+
+                      {/* 底部关闭行 */}
+                      <div style={{ padding: 6, borderTop: '1px solid #f0f0f0', textAlign: 'right' }}>
+                        <Button
+                          size="small"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setShowCategorySheet(false);
+                            setShowSearchInArea(false);
+                            setCategoryCollapsed(false);
+                            setDistrictPanelOpen(false);
+                            setHistoryVisible(false);
+                            setCategoryDetailItem(null);
+                          }}
+                        >
+                          关闭
+                        </Button>
+                      </div>
+                        </>
+                      )}
+
+                      {/* 详情态：替换列表，位置与弹窗一致 */}
+                      {categoryDetailItem && (
+                        <div style={{ position: 'relative', background: '#fff' }}>
+                          <div style={{ position: 'relative', height: 180, overflow: 'hidden' }}>
+                            <img
+                              src={categoryDetailItem.photoUrl}
+                              alt=""
+                              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                            />
+                            <Button
+                              size="small"
+                              onClick={() => {
+                                setCategoryDetailItem(null);
+                                // 清掉 label
+                                setSearchMarkers((prev) =>
+                                  (prev || []).map((m: any) => ({ ...m, data: { ...(m.data || {}), labelText: undefined } })),
+                                );
+                              }}
+                              style={{ position: 'absolute', top: 10, left: 10 }}
+                            >
+                              返回
+                            </Button>
+
+                            <Button
+                              type="primary"
+                              onClick={() => {startNavigateTo(categoryDetailItem);setCategoryDetailItem(null);setCategoryCollapsed(false)}}
+                              style={{
+                                position: 'absolute',
+                                right: 12,
+                                top: '50%',
+                                transform: 'translateY(-50%)',
+                                height: 44,
+                                width: 44,
+                                borderRadius: 22,
+                                padding: 0,
+                                boxShadow: '0 10px 22px rgba(0,0,0,0.22)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexDirection: 'column',
+                                lineHeight: 1.1,
+                              }}
+                            >
+                              {/* <div style={{ fontSize: 16, marginBottom: 2 }}>↑</div> */}
+                              <div style={{ fontSize: 11 }}>到这去</div>
+                            </Button>
+                          </div>
+
+                          <div style={{ padding: '10px 12px' }}>
+                            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>
+                              {categoryDetailItem.name}
+                            </div>
+                            <div style={{ fontSize: 12, color: '#666', lineHeight: 1.5, marginBottom: 8 }}>
+                              {categoryDetailItem.address || '--'}
+                            </div>
+                            {categoryDetailItem.tel && (
+                              <div style={{ fontSize: 12, color: '#666' }}>{categoryDetailItem.tel}</div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
                                   {/* 路线按钮（搜索框右侧） */}
                                   <div style={{ display: 'inline-block', marginLeft: 8 }}>

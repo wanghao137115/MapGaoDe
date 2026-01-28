@@ -103,6 +103,32 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
 
         // 更新标题
         existingMarker.setTitle(marker.title);
+
+        // 更新 label（可视化文字）
+        try {
+          const labelText = marker?.data?.labelText;
+          if (labelText) {
+            existingMarker.setLabel({
+              direction: 'top',
+              offset: new AMap.Pixel(0, -28),
+              content: `<div style="
+                padding: 2px 6px;
+                background: rgba(0,0,0,0.72);
+                color: #fff;
+                border-radius: 10px;
+                font-size: 12px;
+                line-height: 18px;
+                white-space: nowrap;
+                box-shadow: 0 6px 14px rgba(0,0,0,0.18);
+              ">${String(labelText).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`,
+            });
+          } else {
+            // 取消 label
+            existingMarker.setLabel(null);
+          }
+        } catch (e) {
+          // ignore
+        }
       }
     });
 
@@ -183,6 +209,29 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
       draggable: true,
       cursor: "pointer",
             });
+
+    // 可选：显示可视化文字标签（用于分类详情选中态等）
+    const labelText = marker?.data?.labelText;
+    if (labelText) {
+      try {
+        mapMarker.setLabel({
+          direction: 'top',
+          offset: new AMap.Pixel(0, -28),
+          content: `<div style="
+            padding: 2px 6px;
+            background: rgba(0,0,0,0.72);
+            color: #fff;
+            border-radius: 10px;
+            font-size: 12px;
+            line-height: 18px;
+            white-space: nowrap;
+            box-shadow: 0 6px 14px rgba(0,0,0,0.18);
+          ">${String(labelText).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`,
+        });
+      } catch (e) {
+        // ignore
+      }
+    }
 
     mapMarker.on("click", (e: any) => {
                 onMarkerClick?.(marker);
