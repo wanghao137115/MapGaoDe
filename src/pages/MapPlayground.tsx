@@ -372,7 +372,8 @@ const MapPlayground: React.FC = () => {
   const [districtPanelOpen, setDistrictPanelOpen] = useState<boolean>(false);
   const [sortMode, setSortMode] = useState<'recommend' | 'distance' | 'rating'>('recommend');
   const pendingNavigateRef = useRef<CategoryItem | null>(null);
-  const suppressNextCategoryCollapseRef = useRef<boolean>(false);
+  // 在程序性移动地图（setCenter/setZoom）后的短时间内，抑制“自动收起”
+  const suppressCategoryCollapseUntilRef = useRef<number>(0);
 
   // 新增右上工具栏的状态：路况、测距、地铁
   const [showTraffic, setShowTraffic] = useState<boolean>(false);
@@ -741,8 +742,7 @@ const MapPlayground: React.FC = () => {
 
     const onMoveOrZoomEnd = () => setShowSearchInArea(true);
     const onMapInteract = () => {
-      if (suppressNextCategoryCollapseRef.current) {
-        suppressNextCategoryCollapseRef.current = false;
+      if (Date.now() < suppressCategoryCollapseUntilRef.current) {
         return;
       }
       setCategoryCollapsed(true);
@@ -778,13 +778,15 @@ const MapPlayground: React.FC = () => {
       const target = e.target as Node | null;
       if (!el || !target) return;
       if (!el.contains(target)) {
+        // 详情态不自动收起（避免和“详情卡”交互冲突）
+        if (categoryDetailItem) return;
         setCategoryCollapsed(true);
         setDistrictPanelOpen(false);
       }
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [showCategorySheet]);
+  }, [showCategorySheet, categoryDetailItem]);
 
   // 调试：观察收起状态变化
   React.useEffect(() => {
@@ -922,8 +924,9 @@ const MapPlayground: React.FC = () => {
 
   const selectCategoryItemForDetail = (item: CategoryItem) => {
     console.log('[Category] select item for detail:', item.name);
-    // 列表点击会触发程序性 setMapCenter/setZoom，避免 map 事件把弹窗误切到收起态
-    suppressNextCategoryCollapseRef.current = true;
+    // 列表点击会触发程序性 setMapCenter/setZoom，地图会连续触发多个事件（movestart/zoomstart...）
+    // 这里用时间窗口抑制自动收起，避免被抢回收起态提示条
+    suppressCategoryCollapseUntilRef.current = Date.now() + 800;
     setCategoryDetailItem(item);
     setCategoryCollapsed(false);
     setDistrictPanelOpen(false);
