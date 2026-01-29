@@ -29,6 +29,10 @@ import {
   ReloadOutlined,     // 刷新图标
   CheckCircleOutlined,// 完成图标
   ExclamationCircleOutlined, // 警告图标
+  MenuFoldOutlined,   // 折叠图标
+  MenuUnfoldOutlined, // 展开图标
+  UpOutlined,         // 向上收起
+  DownOutlined,       // 向下展开
 } from '@ant-design/icons'; // Ant Design图标库
 
 import MapContainer from '@/components/Map/MapContainer';  // 地图容器组件
@@ -59,6 +63,12 @@ enum DeliveryStatus {
   FAILED = 'failed'        // 配送失败
 }
 
+// 快递优先级枚举
+enum DeliveryPriority {
+  NORMAL = 'normal',   // 普通
+  URGENT = 'urgent'    // 加急
+}
+
 // 车辆信息接口定义
 interface Vehicle {
   id: string;              // 车辆唯一标识
@@ -79,9 +89,10 @@ interface DeliveryTask {
   orderId: string;         // 订单号
   customerName: string;    // 客户姓名
   customerPhone: string;   // 客户电话
-  pickupAddress: MapPosition;  // 取货地址
-  deliveryAddress: MapPosition; // 送货地址
+  pickupAddress: MapPosition;  // 取货地址（快递站位置）
+  deliveryAddress: MapPosition; // 送货地址（终点）
   status: DeliveryStatus;  // 任务状态
+  priority: DeliveryPriority;  // 快递优先级
   estimatedArrival: Date;  // 预计送达时间
   actualArrival?: Date;    // 实际送达时间
   items: string[];         // 配送物品列表
@@ -160,8 +171,19 @@ const LogisticsTracking: React.FC = () => {
     }
   ]);
 
-  // 配送任务列表状态 - 一开始没有任务
+  // 配送任务列表状态 - 一开始没有任务（只有确认派送后才出现）
   const [deliveryTasks, setDeliveryTasks] = useState<DeliveryTask[]>([]);
+  
+  // 快递站位置（区域内随机生成）
+  const [warehousePosition] = useState<MapPosition>(() => {
+    // 基于地图中心点，在区域内随机生成快递站位置
+    const baseLng = 116.3974;
+    const baseLat = 39.9093;
+    return {
+      lng: baseLng + (Math.random() - 0.5) * 0.05,
+      lat: baseLat + (Math.random() - 0.5) * 0.05
+    };
+  });
 
   // 轨迹回放相关状态
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>(''); // 选中的车辆ID
@@ -173,7 +195,10 @@ const LogisticsTracking: React.FC = () => {
   // UI状态
   const [selectedTask, setSelectedTask] = useState<DeliveryTask | null>(null); // 选中的任务
   const [showTaskModal, setShowTaskModal] = useState(false); // 显示任务详情弹窗
-  const [showAssignModal, setShowAssignModal] = useState(false); // 显示车辆分配弹窗
+  const [showAssignModal, setShowAssignModal] = useState<boolean>(false); // 显示车辆分配弹窗
+  const [assigningVehicleId, setAssigningVehicleId] = useState<string>(''); // 正在分配任务的车辆ID
+  const [assignDeliveryAddress, setAssignDeliveryAddress] = useState<MapPosition | null>(null); // 分配的终点地址
+  const [assignPriority, setAssignPriority] = useState<DeliveryPriority>(DeliveryPriority.NORMAL); // 分配的优先级
   const [routeResult, setRouteResult] = useState<any>(null); // 路径规划结果
 
   // 车辆轨迹状态 - 实时轨迹
@@ -187,6 +212,12 @@ const LogisticsTracking: React.FC = () => {
   const [userRole, setUserRole] = useState<UserRole>('admin');
   // 当前查看的派送员（这里用车辆模拟，一个车辆=一个派送员）
   const [selectedCourierId, setSelectedCourierId] = useState<string>('v001');
+  
+  // 管理员视图面板折叠状态
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState<boolean>(false);
+  const [statsPanelCollapsed, setStatsPanelCollapsed] = useState<boolean>(false);
+  const [vehiclePanelCollapsed, setVehiclePanelCollapsed] = useState<boolean>(false);
+  const [taskPanelCollapsed, setTaskPanelCollapsed] = useState<boolean>(false);
 
   // 当获取到用户位置时，更新地图中心点
   useEffect(() => {
@@ -208,9 +239,26 @@ const LogisticsTracking: React.FC = () => {
 
   // 处理地点选择（点击搜索结果）
   const handlePlaceSelect = useCallback((place: any) => {
+    // 如果正在设置派送任务，直接设置为终点
+    if (showAssignModal && assigningVehicleId) {
+      setAssignDeliveryAddress(place.location);
+      return;
+    }
     // 只设置选中状态，不立即跳转地图
     // 用户可以通过回车确认来跳转
-  }, []);
+  }, [showAssignModal, assigningVehicleId]);
+
+  // 处理地图点击 - 如果正在设置派送任务，设置终点
+  const handleMapClick = useCallback((e: any) => {
+    if (showAssignModal && assigningVehicleId) {
+      const position: MapPosition = {
+        lng: e.lnglat.lng,
+        lat: e.lnglat.lat
+      };
+      setAssignDeliveryAddress(position);
+      message.success('已通过地图点击设置配送终点');
+    }
+  }, [showAssignModal, assigningVehicleId]);
 
   // 处理地点确认（回车确定）
   const handlePlaceConfirm = useCallback((place: any) => {
@@ -225,7 +273,7 @@ const LogisticsTracking: React.FC = () => {
     // 添加星号标记作为确认地点
     const starMarker = {
       id: `confirmed-${place.id}`,
-      type: 'confirmed_place' as const,
+      type: 'store' as const,
       title: `📍 ${place.name}`,
       position: place.location,
       createdAt: new Date(),
@@ -466,13 +514,13 @@ const LogisticsTracking: React.FC = () => {
               }, 1000);
               return vehicle;
             } else {
-              // 向目的地移动
-              const speed = 0.0005; // 移动速度
+              // 向目的地移动 - 根据优先级设置不同速度
+              const baseSpeed = task.priority === DeliveryPriority.URGENT ? 0.001 : 0.0005; // 加急更快
               const directionLng = (task.deliveryAddress.lng - vehicle.position.lng) / distance;
               const directionLat = (task.deliveryAddress.lat - vehicle.position.lat) / distance;
 
-              const newLng = vehicle.position.lng + directionLng * speed;
-              const newLat = vehicle.position.lat + directionLat * speed;
+              const newLng = vehicle.position.lng + directionLng * baseSpeed;
+              const newLat = vehicle.position.lat + directionLat * baseSpeed;
               const newSpeed = Math.round(distance * 1000); // 根据距离计算速度
 
               const updatedVehicle = {
@@ -540,38 +588,56 @@ const LogisticsTracking: React.FC = () => {
     setPlaybackSpeed(speed);
   }, []);
   
-  // 处理任务点击
+  // 处理任务点击 - 显示该任务的时间线
   const handleTaskClick = useCallback((task: DeliveryTask) => {
     setSelectedTask(task);
+    setSelectedTaskTimeline(task.id);
     setShowTaskModal(true);
   }, []);
   
 
 
-  // 处理车辆分配任务
-  const handleAssignVehicle = useCallback((vehicleId: string) => {
-    // 创建一个模拟的配送任务
+  // 打开派送设置弹窗
+  const handleOpenAssignModal = useCallback((vehicleId: string) => {
     const vehicle = vehicles.find(v => v.id === vehicleId);
     if (!vehicle || vehicle.status !== VehicleStatus.IDLE) {
       message.error('该车辆当前不可用');
       return;
     }
+    setAssigningVehicleId(vehicleId);
+    setAssignDeliveryAddress(null);
+    setAssignPriority(DeliveryPriority.NORMAL);
+    setShowAssignModal(true);
+  }, [vehicles]);
 
+  // 确认派送任务
+  const handleConfirmAssign = useCallback(() => {
+    if (!assignDeliveryAddress) {
+      message.warning('请先设置配送终点位置');
+      return;
+    }
+
+    const vehicle = vehicles.find(v => v.id === assigningVehicleId);
+    if (!vehicle) {
+      message.error('车辆信息不存在');
+      return;
+    }
+
+    // 根据优先级计算预计送达时间（加急更快）
+    const baseTime = assignPriority === DeliveryPriority.URGENT ? 900000 : 1800000; // 加急15分钟，普通30分钟
     const newTask: DeliveryTask = {
       id: `t${Date.now()}`,
-      vehicleId: vehicleId,
+      vehicleId: assigningVehicleId,
       orderId: `ORD${Date.now()}`,
       customerName: ['张三', '李四', '王五', '赵六'][Math.floor(Math.random() * 4)],
       customerPhone: `138${Math.floor(Math.random() * 90000000 + 10000000)}`,
-      pickupAddress: vehicle.position, // 从车辆当前位置出发
-      deliveryAddress: {
-        lng: vehicle.position.lng + (Math.random() - 0.5) * 0.02,
-        lat: vehicle.position.lat + (Math.random() - 0.5) * 0.02
-      },
+      pickupAddress: warehousePosition, // 快递站位置
+      deliveryAddress: assignDeliveryAddress, // 用户设置的终点
       status: DeliveryStatus.ASSIGNED,
-      estimatedArrival: new Date(Date.now() + 1800000), // 30分钟后
+      priority: assignPriority,
+      estimatedArrival: new Date(Date.now() + baseTime),
       items: [['快递包裹'], ['文件资料'], ['电子产品']][Math.floor(Math.random() * 3)],
-      notes: '请送货上门'
+      notes: assignPriority === DeliveryPriority.URGENT ? '加急配送' : '普通配送'
     };
 
     setDeliveryTasks(prev => [...prev, newTask]);
@@ -583,7 +649,12 @@ const LogisticsTracking: React.FC = () => {
       [newTask.id]: initialNodes
     }));
 
-    message.success(`已为 ${vehicle.licensePlate} 分配配送任务`);
+    message.success(`已为 ${vehicle.licensePlate} 分配${assignPriority === DeliveryPriority.URGENT ? '加急' : '普通'}配送任务`);
+
+    // 关闭弹窗
+    setShowAssignModal(false);
+    setAssigningVehicleId('');
+    setAssignDeliveryAddress(null);
 
     // 自动开始运输（模拟）
     setTimeout(() => {
@@ -596,17 +667,17 @@ const LogisticsTracking: React.FC = () => {
 
       // 更新车辆状态为行驶中
       setVehicles(prevVehicles =>
-        prevVehicles.map(vehicle =>
-          vehicle.id === vehicleId
-            ? { ...vehicle, status: VehicleStatus.EN_ROUTE, lastUpdate: new Date() }
-            : vehicle
+        prevVehicles.map(v =>
+          v.id === assigningVehicleId
+            ? { ...v, status: VehicleStatus.EN_ROUTE, lastUpdate: new Date() }
+            : v
         )
       );
 
       // 初始化该车辆的实时轨迹
       setActiveRoutes(prev => ({
         ...prev,
-        [vehicleId]: [newTask.pickupAddress]
+        [assigningVehicleId]: [warehousePosition]
       }));
 
       // 更新配送节点
@@ -619,7 +690,7 @@ const LogisticsTracking: React.FC = () => {
 
       message.success('车辆开始运输');
     }, 2000); // 2秒后开始运输
-  }, [vehicles, generateDeliveryNodes]);
+  }, [vehicles, assignDeliveryAddress, assignPriority, assigningVehicleId, warehousePosition, generateDeliveryNodes]);
 
   // 处理路径规划
   const handlePlanRoute = useCallback(async (params: RoutePlanningParams) => {
@@ -695,7 +766,7 @@ const LogisticsTracking: React.FC = () => {
               type="primary"
               onClick={(e) => {
                 e.stopPropagation();
-                handleAssignVehicle(vehicle.id);
+                handleOpenAssignModal(vehicle.id);
               }}
             >
               派送
@@ -760,11 +831,11 @@ const LogisticsTracking: React.FC = () => {
         style={{
           marginBottom: 8,
           cursor: 'pointer',
-          border: isSelected ? '2px solid #1890ff' : '1px solid #d9d9d9'
+          border: isSelected ? '2px solid #1890ff' : '1px solid #d9d9d9',
+          backgroundColor: isSelected ? '#f0f9ff' : '#fff'
         }}
         onClick={() => {
           handleTaskClick(task);
-          setSelectedTaskTimeline(task.id);
         }}
       >
         <Row align="middle" gutter={8}>
@@ -773,6 +844,9 @@ const LogisticsTracking: React.FC = () => {
               <Space>
                 <strong>订单：{task.orderId}</strong>
                 <Tag color={statusInfo.color}>{statusInfo.text}</Tag>
+                <Tag color={task.priority === DeliveryPriority.URGENT ? 'red' : 'default'}>
+                  {task.priority === DeliveryPriority.URGENT ? '加急' : '普通'}
+                </Tag>
               </Space>
               <div style={{ fontSize: '12px', color: '#666' }}>
                 客户：{task.customerName} | 车辆：{vehicle?.licensePlate || '未分配'}
@@ -842,261 +916,574 @@ const LogisticsTracking: React.FC = () => {
     );
   };
 
-  // 管理员视图布局
+  // 管理员视图布局 - 全屏地图 + 悬浮面板
   const renderAdminView = () => (
-    <>
-      {/* 页面标题和统计信息 */}
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="在线车辆"
-              value={vehicles.filter(v => v.status !== VehicleStatus.OFFLINE).length}
-              prefix={<CarOutlined />}
-              valueStyle={{ color: '#3f8600' }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="配送中订单"
-              value={deliveryTasks.filter(t => t.status === DeliveryStatus.IN_TRANSIT).length}
-              prefix={<EnvironmentOutlined />}
-              valueStyle={{ color: '#1890ff' }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="今日完成"
-              value={deliveryTasks.filter(t => t.status === DeliveryStatus.DELIVERED).length}
-              prefix={<CheckCircleOutlined />}
-              valueStyle={{ color: '#52c41a' }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic
-              title="平均配送时长"
-              value={45}
-              suffix="分钟"
-              prefix={<ClockCircleOutlined />}
-              valueStyle={{ color: '#722ed1' }}
-            />
-          </Card>
-        </Col>
-      </Row>
+    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', overflow: 'hidden', zIndex: 0 }}>
+      {/* 全屏地图 */}
+      <MapContainer
+        center={mapCenter}
+        zoom={mapZoom}
+        controls={{ scale: true, toolBar: true, mapType: true }}
+        style={{ width: '100%', height: '100%' }}
+        onMapClick={handleMapClick}
+      >
+        {/* 车辆位置标记层 */}
+        <MarkerLayer
+          markers={vehicles.map(vehicle => {
+            // 根据车辆状态选择不同的图标颜色
+            let iconUrl = '';
+            switch (vehicle.status) {
+              case VehicleStatus.IDLE:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png'; // 蓝色 - 空闲
+                break;
+              case VehicleStatus.EN_ROUTE:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png'; // 红色 - 行驶中
+                break;
+              case VehicleStatus.DELIVERING:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_y.png'; // 黄色 - 配送中
+                break;
+              case VehicleStatus.MAINTENANCE:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_p.png'; // 紫色 - 维修中
+                break;
+              case VehicleStatus.OFFLINE:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png'; // 灰色 - 离线
+                break;
+              default:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_bs.png';
+            }
 
-      {/* 地点搜索 */}
-      <Row style={{ marginBottom: 16 }}>
-        <Col span={24}>
-          <Card>
-            <PlaceSearch
-              placeholder="搜索配送目的地、客户地址..."
-              city=""
-              onPlaceSelect={handlePlaceSelect}
-              onPlaceConfirm={handlePlaceConfirm}
-              style={{ marginBottom: 0 }}
-            />
-          </Card>
-        </Col>
-      </Row>
+            return {
+              id: vehicle.id,
+              type: 'vehicle' as const,
+              title: `${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`,
+              position: vehicle.position,
+              icon: iconUrl,
+              createdAt: vehicle.lastUpdate,
+              updatedAt: vehicle.lastUpdate,
+              data: {
+                status: vehicle.status === VehicleStatus.MAINTENANCE ? 'maintenance' :
+                        vehicle.status === VehicleStatus.OFFLINE ? 'inactive' :
+                        vehicle.status === VehicleStatus.IDLE ? 'inactive' : 'active',
+                batteryLevel: vehicle.batteryLevel,
+                speed: vehicle.speed,
+                temperature: vehicle.temperature,
+                lastUpdate: vehicle.lastUpdate
+              }
+            };
+          })}
+          onMarkerClick={(marker) => {
+            const vehicle = vehicles.find(v => v.id === marker.id);
+            if (vehicle) {
+              message.info(`${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`);
+            }
+          }}
+        />
 
-      <Row gutter={16}>
-        {/* 左侧控制面板 */}
-        <Col span={8}>
-          {/* 车辆状态监控 */}
-          <Card title="车辆监控" style={{ marginBottom: 16 }}>
-            <div style={{ height: '300px', overflow: 'auto' }}>
+        {/* 搜索结果标记 */}
+        {searchMarkers.length > 0 && (
+          <MarkerLayer
+            markers={searchMarkers}
+            onMarkerClick={(marker) => {
+              message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
+            }}
+          />
+        )}
+
+        {/* 确认的地点标记（星号） */}
+        {confirmedPlaceMarker && (
+          <MarkerLayer
+            markers={[confirmedPlaceMarker]}
+            onMarkerClick={(marker) => {
+              message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
+            }}
+          />
+        )}
+
+        {/* 快递站位置标记 */}
+        <MarkerLayer
+          markers={[{
+            id: 'warehouse',
+            type: 'warehouse' as const,
+            title: '快递站',
+            position: warehousePosition,
+            icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            data: {
+              address: '快递站',
+              isWarehouse: true
+            }
+          }]}
+          onMarkerClick={(marker) => {
+            message.info('快递站位置');
+          }}
+        />
+
+        {/* 派送终点标记（如果正在设置） */}
+        {assignDeliveryAddress && (
+          <MarkerLayer
+            markers={[{
+              id: 'assign-destination',
+              type: 'store' as const,
+              title: '配送终点',
+              position: assignDeliveryAddress,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              data: {
+                address: '配送终点',
+                isAssignDestination: true
+              }
+            }]}
+          />
+        )}
+
+        {/* 轨迹回放路径 */}
+        {selectedVehicleId && trackPoints.length > 0 && (
+          <RouteLayer
+            polyline={isPlaying ? trackPoints.slice(0, currentTrackIndex + 1).map(p => p.position) : []}
+            mode="driving"
+            visible={true}
+          />
+        )}
+
+        {/* 实时车辆轨迹 */}
+        {Object.entries(activeRoutes).map(([vehicleId, route]) => (
+          <RouteLayer
+            key={`active-${vehicleId}`}
+            polyline={route}
+            mode="driving"
+            visible={true}
+          />
+        ))}
+
+        {/* 配送路线 */}
+        {routeResult && (
+          <RouteLayer
+            polyline={routeResult.data?.polyline || []}
+            mode="driving"
+            visible={true}
+          />
+        )}
+      </MapContainer>
+
+      {/* 左上：搜索框（悬浮） */}
+      <div style={{
+        position: 'absolute',
+        left: 12,
+        top: 12,
+        zIndex: 2000,
+        width: 400,
+      }}>
+        <Card size="small" style={{ borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,0.08)' }}>
+          <PlaceSearch
+            placeholder="搜索配送目的地、客户地址..."
+            city=""
+            onPlaceSelect={handlePlaceSelect}
+            onPlaceConfirm={handlePlaceConfirm}
+            style={{ marginBottom: 0 }}
+          />
+        </Card>
+      </div>
+
+      {/* 顶部：统计信息卡片（悬浮，可折叠） */}
+      {statsPanelCollapsed ? (
+        <div style={{
+          position: 'absolute',
+          left: '50%',
+          top: 12,
+          transform: 'translateX(-50%)',
+          zIndex: 2000,
+        }}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setStatsPanelCollapsed(false)}
+            style={{ borderRadius: 8, boxShadow: '0 6px 18px rgba(0,0,0,0.08)' }}
+          >
+            显示统计
+          </Button>
+        </div>
+      ) : (
+        <div style={{
+          position: 'absolute',
+          left: '50%',
+          top: 12,
+          width: '45%',
+          transform: 'translateX(-50%)',
+          zIndex: 2000,
+        }}>
+          <Card 
+            size="small" 
+            style={{ 
+              borderRadius: 8, 
+              boxShadow: '0 6px 18px rgba(0,0,0,0.08)',
+              background: 'rgba(255,255,255,0.98)',
+            }}
+            extra={
+              <Button
+                type="text"
+                size="small"
+                icon={<MenuFoldOutlined />}
+                onClick={() => setStatsPanelCollapsed(true)}
+              />
+            }
+          >
+            <Row gutter={16}>
+              <Col span={6}>
+                <Statistic
+                  title="在线车辆"
+                  value={vehicles.filter(v => v.status !== VehicleStatus.OFFLINE).length}
+                  prefix={<CarOutlined />}
+                  valueStyle={{ color: '#3f8600', fontSize: 20 }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="配送中订单"
+                  value={deliveryTasks.filter(t => t.status === DeliveryStatus.IN_TRANSIT).length}
+                  prefix={<EnvironmentOutlined />}
+                  valueStyle={{ color: '#1890ff', fontSize: 20 }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="今日完成"
+                  value={deliveryTasks.filter(t => t.status === DeliveryStatus.DELIVERED).length}
+                  prefix={<CheckCircleOutlined />}
+                  valueStyle={{ color: '#52c41a', fontSize: 20 }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="平均配送时长"
+                  value={45}
+                  suffix="分钟"
+                  prefix={<ClockCircleOutlined />}
+                  valueStyle={{ color: '#722ed1', fontSize: 20 }}
+                />
+              </Col>
+            </Row>
+          </Card>
+        </div>
+      )}
+
+      {/* 左侧：展开按钮（当两个面板都收起时显示） */}
+      {leftPanelCollapsed && (
+        <div style={{
+          position: 'absolute',
+          left: 12,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          zIndex: 2000,
+        }}>
+          <Button
+            type="primary"
+            size="large"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setLeftPanelCollapsed(false)}
+            style={{ borderRadius: '8px 0 0 8px', boxShadow: '0 6px 18px rgba(0,0,0,0.08)' }}
+          />
+        </div>
+      )}
+
+      {/* 左侧：车辆监控Card收起按钮 */}
+      {!leftPanelCollapsed && vehiclePanelCollapsed && (
+        <div style={{
+          position: 'absolute',
+          left: 12,
+          top: statsPanelCollapsed ? 80 : 80,
+          zIndex: 2000,
+        }}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setVehiclePanelCollapsed(false)}
+            style={{ borderRadius: '8px 0 0 8px', boxShadow: '0 6px 18px rgba(0,0,0,0.08)' }}
+            title="展开车辆监控"
+          />
+        </div>
+      )}
+
+      {/* 左侧：车辆监控Card（独立悬浮） */}
+      {!leftPanelCollapsed && !vehiclePanelCollapsed && (
+        <div style={{
+          position: 'absolute',
+          left: 12,
+          top: statsPanelCollapsed ? 80 : 80,
+          zIndex: 2000,
+          width: 320,
+        }}>
+          <Card 
+            size="small" 
+            style={{
+              borderRadius: 8,
+              boxShadow: '0 6px 18px rgba(0,0,0,0.08)',
+              background: 'rgba(255,255,255,0.98)',
+            }}
+            title={
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>车辆监控</span>
+                <Space>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<MenuFoldOutlined />}
+                    onClick={() => setVehiclePanelCollapsed(true)}
+                    title="收起车辆监控"
+                  />
+                </Space>
+              </div>
+            }
+          >
+            <div style={{ maxHeight: 300, overflow: 'auto' }}>
               {vehicles.map(renderVehicleCard)}
             </div>
           </Card>
+        </div>
+      )}
 
-          {/* 配送任务列表 */}
-          <Card title="配送任务" style={{ marginBottom: 16 }}>
-            <div style={{ height: '200px', overflow: 'auto' }}>
-              {deliveryTasks.map(renderDeliveryTask)}
-            </div>
-          </Card>
+      {/* 左侧：派送任务Card收起按钮 */}
+      {!leftPanelCollapsed && taskPanelCollapsed && (
+        <div style={{
+          position: 'absolute',
+          left: 12,
+          top: statsPanelCollapsed ? (vehiclePanelCollapsed ? 455 : 455) : (vehiclePanelCollapsed ? 455 : 455),
+          zIndex: 2000,
+        }}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setTaskPanelCollapsed(false)}
+            style={{ borderRadius: '8px 0 0 8px', boxShadow: '0 6px 18px rgba(0,0,0,0.08)' }}
+            title="展开派送任务"
+          />
+        </div>
+      )}
 
-          {/* 配送时间线 */}
-          <Card title="配送时间线" style={{ marginBottom: 16 }}>
-            <div style={{ height: '250px', overflow: 'auto' }}>
-              {selectedTaskTimeline && deliveryNodes[selectedTaskTimeline] ? (
-                <Timeline
-                  items={deliveryNodes[selectedTaskTimeline].map(node => ({
-                    key: node.id,
-                    color: node.status === 'completed' ? 'green' :
-                           node.status === 'in_progress' ? 'blue' :
-                           node.status === 'failed' ? 'red' : 'gray',
-                    dot: node.status === 'in_progress' ? <ClockCircleOutlined spin /> :
-                         node.status === 'completed' ? <CheckCircleOutlined /> :
-                         node.status === 'failed' ? <ExclamationCircleOutlined /> : undefined,
-                    children: (
-                      <div>
-                        <div style={{ fontWeight: 'bold' }}>{node.title}</div>
-                        <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
-                          {node.description}
-                        </div>
-                        <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>
-                          {node.timestamp.toLocaleString()}
-                        </div>
-                      </div>
-                    )
-                  }))}
+      {/* 左侧：派送任务Card（独立悬浮） */}
+      {!leftPanelCollapsed && !taskPanelCollapsed && (
+        <div style={{
+          position: 'absolute',
+          left: 12,
+          top: statsPanelCollapsed ? (vehiclePanelCollapsed ? 455 : 455) : (vehiclePanelCollapsed ? 455 : 455),
+          bottom: selectedVehicleId && trackPoints.length > 0 ? 200 : 12,
+          zIndex: 2000,
+          width: 320,
+          height: 550,
+        }}>
+          <Card 
+            size="small" 
+            style={{
+              height: '100%',
+              borderRadius: 8,
+              boxShadow: '0 6px 18px rgba(0,0,0,0.08)',
+              background: 'rgba(255,255,255,0.98)',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+            title={
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>派送任务</span>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<MenuFoldOutlined />}
+                  onClick={() => setTaskPanelCollapsed(true)}
+                  title="收起派送任务"
                 />
-              ) : (
-                <div style={{ textAlign: 'center', color: '#999', padding: '20px' }}>
-                  选择配送任务查看时间线
+              </div>
+            }
+            bodyStyle={{ flex: 1, overflow: 'auto', padding: '12px' }}
+          >
+            <div style={{ height: '100%', overflow: 'auto' }}>
+              {deliveryTasks.length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>
+                  暂无任务，点击车辆卡片上的"派送"按钮创建任务
                 </div>
+              ) : (
+                deliveryTasks.map(renderDeliveryTask)
               )}
             </div>
           </Card>
+        </div>
+      )}
 
-          {/* 轨迹回放控制 */}
+      {/* 轨迹回放控制（独立悬浮，在派送任务下方） */}
+      {!leftPanelCollapsed && selectedVehicleId && trackPoints.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          left: 12,
+          bottom: 12,
+          zIndex: 2000,
+          width: 320,
+        }}>
           {renderPlaybackControls()}
-        </Col>
+        </div>
+      )}
 
-        {/* 右侧地图区域 */}
-        <Col span={16}>
-          <Card title="实时地图监控" style={{ height: '700px' }}>
-            <div style={{ position: 'relative', width: '100%', height: '600px' }}>
-              <MapContainer
-                center={mapCenter}
-                zoom={mapZoom}
-                controls={{ scale: true, toolBar: true, mapType: true }}
-                style={{ width: '100%', height: '100%' }}
-              >
-                {/* 车辆位置标记层 */}
-                <MarkerLayer
-                  markers={vehicles.map(vehicle => {
-                    // 根据车辆状态选择不同的图标颜色
-                    let iconUrl = '';
-                    switch (vehicle.status) {
-                      case VehicleStatus.IDLE:
-                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png'; // 蓝色 - 空闲
-                        break;
-                      case VehicleStatus.EN_ROUTE:
-                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png'; // 红色 - 行驶中
-                        break;
-                      case VehicleStatus.DELIVERING:
-                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_y.png'; // 黄色 - 配送中
-                        break;
-                      case VehicleStatus.MAINTENANCE:
-                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_p.png'; // 紫色 - 维修中
-                        break;
-                      case VehicleStatus.OFFLINE:
-                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png'; // 灰色 - 离线
-                        break;
-                      default:
-                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_bs.png';
-                    }
-
-                    return {
-                      id: vehicle.id,
-                      type: 'vehicle' as const,
-                      title: `${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`,
-                      position: vehicle.position,
-                      icon: iconUrl,
-                      createdAt: vehicle.lastUpdate,
-                      updatedAt: vehicle.lastUpdate,
-                      data: {
-                        status: vehicle.status === VehicleStatus.MAINTENANCE ? 'maintenance' :
-                                vehicle.status === VehicleStatus.OFFLINE ? 'inactive' :
-                                vehicle.status === VehicleStatus.IDLE ? 'inactive' : 'active',
-                        batteryLevel: vehicle.batteryLevel,
-                        speed: vehicle.speed,
-                        temperature: vehicle.temperature,
-                        lastUpdate: vehicle.lastUpdate
-                      }
-                    };
-                  })}
-                  onMarkerClick={(marker) => {
-                    const vehicle = vehicles.find(v => v.id === marker.id);
-                    if (vehicle) {
-                      message.info(`${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`);
-                    }
-                  }}
-                />
-
-                {/* 搜索结果标记 */}
-                {searchMarkers.length > 0 && (
-                  <MarkerLayer
-                    markers={searchMarkers}
-                    onMarkerClick={(marker) => {
-                      message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
-                    }}
-                  />
-                )}
-
-                {/* 确认的地点标记（星号） */}
-                {confirmedPlaceMarker && (
-                  <MarkerLayer
-                    markers={[confirmedPlaceMarker]}
-                    onMarkerClick={(marker) => {
-                      message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
-                    }}
-                  />
-                )}
-
-                {/* 轨迹回放路径 */}
-                {selectedVehicleId && trackPoints.length > 0 && (
-                  <RouteLayer
-                    polyline={isPlaying ? trackPoints.slice(0, currentTrackIndex + 1).map(p => p.position) : []}
-                    mode="driving"
-                    visible={true}
-                  />
-                )}
-
-                {/* 实时车辆轨迹 */}
-                {Object.entries(activeRoutes).map(([vehicleId, route]) => (
-                  <RouteLayer
-                    key={`active-${vehicleId}`}
-                    polyline={route}
-                    mode="driving"
-                    visible={true}
-                  />
-                ))}
-
-                {/* 配送路线 */}
-                {routeResult && (
-                  <RouteLayer
-                    polyline={routeResult.data?.polyline || []}
-                    mode="driving"
-                    visible={true}
-                  />
-                )}
-              </MapContainer>
-            </div>
-
-            {/* 地图图例 */}
-            <div style={{ marginTop: 12, padding: '8px', background: '#f8f9fa', borderRadius: '4px' }}>
-              <Space size="large">
-                <Space>
-                  <div style={{ width: '12px', height: '12px', background: '#1890ff', borderRadius: '50%' }}></div>
-                  <span style={{ fontSize: '12px' }}>行驶中车辆</span>
-                </Space>
-                <Space>
-                  <div style={{ width: '12px', height: '12px', background: '#52c41a', borderRadius: '50%' }}></div>
-                  <span style={{ fontSize: '12px' }}>空闲车辆</span>
-                </Space>
-                <Space>
-                  <div style={{ width: '2px', height: '12px', background: '#1890ff' }}></div>
-                  <span style={{ fontSize: '12px' }}>配送路线</span>
-                </Space>
-                <Space>
-                  <div style={{ width: '2px', height: '12px', background: '#722ed1' }}></div>
-                  <span style={{ fontSize: '12px' }}>轨迹回放</span>
-                </Space>
-              </Space>
-            </div>
+      {/* 右侧：配送时间线面板（点击任务后显示） */}
+      {selectedTaskTimeline && deliveryNodes[selectedTaskTimeline] && (
+        <div style={{
+          position: 'absolute',
+          right: 12,
+          top: statsPanelCollapsed ? 80 : 140,
+          bottom: 12,
+          zIndex: 2000,
+          width: 320,
+        }}>
+          <Card
+            style={{
+              height: '100%',
+              borderRadius: 8,
+              boxShadow: '0 6px 18px rgba(0,0,0,0.08)',
+              background: 'rgba(255,255,255,0.98)',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+            title={
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>配送时间线</span>
+                <Button
+                  type="text"
+                  size="small"
+                  onClick={() => setSelectedTaskTimeline(null)}
+                >
+                  关闭
+                </Button>
+              </div>
+            }
+            bodyStyle={{ flex: 1, overflow: 'auto', padding: '12px' }}
+          >
+            <Timeline
+              items={deliveryNodes[selectedTaskTimeline].map(node => ({
+                key: node.id,
+                color: node.status === 'completed' ? 'green' :
+                       node.status === 'in_progress' ? 'blue' :
+                       node.status === 'failed' ? 'red' : 'gray',
+                dot: node.status === 'in_progress' ? <ClockCircleOutlined spin /> :
+                     node.status === 'completed' ? <CheckCircleOutlined /> :
+                     node.status === 'failed' ? <ExclamationCircleOutlined /> : undefined,
+                children: (
+                  <div>
+                    <div style={{ fontWeight: 'bold' }}>{node.title}</div>
+                    <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+                      {node.description}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>
+                      {node.timestamp.toLocaleString()}
+                    </div>
+                  </div>
+                )
+              }))}
+            />
           </Card>
-        </Col>
-      </Row>
-    </>
+        </div>
+      )}
+
+      {/* 右下：地图图例（悬浮） */}
+      <div style={{
+        position: 'absolute',
+        right: 12,
+        bottom: 12,
+        zIndex: 2000,
+      }}>
+        <Card 
+          size="small" 
+          style={{ 
+            borderRadius: 8, 
+            boxShadow: '0 6px 18px rgba(0,0,0,0.08)',
+            background: 'rgba(255,255,255,0.98)',
+          }}
+        >
+          <Space size="large" direction="vertical">
+            <Space>
+              <div style={{ width: '12px', height: '12px', background: '#1890ff', borderRadius: '50%' }}></div>
+              <span style={{ fontSize: '12px' }}>行驶中车辆</span>
+            </Space>
+            <Space>
+              <div style={{ width: '12px', height: '12px', background: '#52c41a', borderRadius: '50%' }}></div>
+              <span style={{ fontSize: '12px' }}>空闲车辆</span>
+            </Space>
+            <Space>
+              <div style={{ width: '2px', height: '12px', background: '#1890ff' }}></div>
+              <span style={{ fontSize: '12px' }}>配送路线</span>
+            </Space>
+            <Space>
+              <div style={{ width: '2px', height: '12px', background: '#722ed1' }}></div>
+              <span style={{ fontSize: '12px' }}>轨迹回放</span>
+            </Space>
+          </Space>
+        </Card>
+      </div>
+
+      {/* 派送设置弹窗 */}
+      <Modal
+        title="设置派送任务"
+        open={showAssignModal}
+        onCancel={() => {
+          setShowAssignModal(false);
+          setAssigningVehicleId('');
+          setAssignDeliveryAddress(null);
+          setAssignPriority(DeliveryPriority.NORMAL);
+        }}
+        onOk={handleConfirmAssign}
+        okText="确认派送"
+        cancelText="取消"
+        width={600}
+      >
+        <Form layout="vertical">
+          <Form.Item label="起点（快递站）">
+            <Input
+              value={`快递站 (${warehousePosition.lng.toFixed(4)}, ${warehousePosition.lat.toFixed(4)})`}
+              disabled
+            />
+          </Form.Item>
+          <Form.Item label="终点（配送地址）" required>
+            <PlaceSearch
+              placeholder="搜索或点击地图设置配送终点..."
+              city=""
+              onPlaceSelect={(place: any) => {
+                setAssignDeliveryAddress(place.location);
+              }}
+              onPlaceConfirm={(place: any) => {
+                setAssignDeliveryAddress(place.location);
+                message.success(`已设置终点: ${place.name}`);
+              }}
+            />
+            {assignDeliveryAddress && (
+              <div style={{ marginTop: 8, padding: 8, background: '#f0f9ff', borderRadius: 4 }}>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  已选择终点: ({assignDeliveryAddress.lng.toFixed(4)}, {assignDeliveryAddress.lat.toFixed(4)})
+                </div>
+              </div>
+            )}
+          </Form.Item>
+          <Form.Item label="快递优先级" required>
+            <Select
+              value={assignPriority}
+              onChange={(v) => setAssignPriority(v)}
+              style={{ width: '100%' }}
+            >
+              <Select.Option value={DeliveryPriority.NORMAL}>
+                <Space>
+                  <span>普通</span>
+                  <Tag color="default">标准速度</Tag>
+                </Space>
+              </Select.Option>
+              <Select.Option value={DeliveryPriority.URGENT}>
+                <Space>
+                  <span>加急</span>
+                  <Tag color="red">快速配送</Tag>
+                </Space>
+              </Select.Option>
+            </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
   );
 
   // 派送员视图布局（静态展示当前派送员的任务和地图）
@@ -1214,50 +1601,52 @@ const LogisticsTracking: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: 16 }}>
-      {/* 顶部：角色切换 + 全局信息 */}
-      <Card style={{ marginBottom: 16 }}>
-        <Row justify="space-between" align="middle">
-          <Col>
-            <Space direction="vertical" size={4}>
-              <div style={{ fontSize: 18, fontWeight: 600 }}>物流追踪中心</div>
-              <div style={{ fontSize: 12, color: '#888' }}>
-                可视化监控车辆与订单，支持管理员派货与派送员送货两种视图
-              </div>
-            </Space>
-          </Col>
-          <Col>
-            <Space>
-              <span style={{ fontSize: 12, color: '#666' }}>当前身份：</span>
-              <Select<UserRole>
-                value={userRole}
-                onChange={(v) => setUserRole(v)}
-                style={{ width: 120 }}
-                size="small"
-                options={[
-                  { value: 'admin', label: '管理员' },
-                  { value: 'courier', label: '派送员' },
-                ]}
-              />
-              {userRole === 'courier' && (
-                <>
-                  <span style={{ fontSize: 12, color: '#666' }}>派送员：</span>
-                  <Select<string>
-                    value={selectedCourierId}
-                    onChange={(v) => setSelectedCourierId(v)}
-                    style={{ width: 140 }}
-                    size="small"
-                    options={vehicles.map((v) => ({
-                      value: v.id,
-                      label: `${v.driver}（${v.licensePlate}）`,
-                    }))}
-                  />
-                </>
-              )}
-            </Space>
-          </Col>
-        </Row>
-      </Card>
+    <div style={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
+      {/* 顶部：角色切换（悬浮） */}
+      <div style={{
+        position: 'absolute',
+        top: 12,
+        right: 12,
+        zIndex: 2000,
+      }}>
+        <Card 
+          size="small" 
+          style={{ 
+            borderRadius: 8, 
+            boxShadow: '0 6px 18px rgba(0,0,0,0.08)',
+            background: 'rgba(255,255,255,0.98)',
+          }}
+        >
+          <Space>
+            <span style={{ fontSize: 12, color: '#666' }}>当前身份：</span>
+            <Select<UserRole>
+              value={userRole}
+              onChange={(v) => setUserRole(v)}
+              style={{ width: 120 }}
+              size="small"
+              options={[
+                { value: 'admin', label: '管理员' },
+                { value: 'courier', label: '派送员' },
+              ]}
+            />
+            {userRole === 'courier' && (
+              <>
+                <span style={{ fontSize: 12, color: '#666' }}>派送员：</span>
+                <Select<string>
+                  value={selectedCourierId}
+                  onChange={(v) => setSelectedCourierId(v)}
+                  style={{ width: 140 }}
+                  size="small"
+                  options={vehicles.map((v) => ({
+                    value: v.id,
+                    label: `${v.driver}（${v.licensePlate}）`,
+                  }))}
+                />
+              </>
+            )}
+          </Space>
+        </Card>
+      </div>
 
       {userRole === 'admin' ? renderAdminView() : renderCourierView()}
 
