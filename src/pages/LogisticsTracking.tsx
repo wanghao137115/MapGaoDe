@@ -106,8 +106,7 @@ interface DeliveryNode {
   position?: MapPosition;
 }
 
-
-
+type UserRole = 'admin' | 'courier';
 
 // 物流追踪业务场景占位页面
 // 后续在此接入车辆轨迹、时间线等业务组件
@@ -183,6 +182,11 @@ const LogisticsTracking: React.FC = () => {
   // 配送节点状态
   const [deliveryNodes, setDeliveryNodes] = useState<{[taskId: string]: DeliveryNode[]}>({}); // 配送任务的时间线节点
   const [selectedTaskTimeline, setSelectedTaskTimeline] = useState<string | null>(null); // 选中的任务时间线
+
+  // 页面角色：管理员 / 派送员
+  const [userRole, setUserRole] = useState<UserRole>('admin');
+  // 当前查看的派送员（这里用车辆模拟，一个车辆=一个派送员）
+  const [selectedCourierId, setSelectedCourierId] = useState<string>('v001');
 
   // 当获取到用户位置时，更新地图中心点
   useEffect(() => {
@@ -838,15 +842,16 @@ const LogisticsTracking: React.FC = () => {
     );
   };
 
-  return (
-    <div>
+  // 管理员视图布局
+  const renderAdminView = () => (
+    <>
       {/* 页面标题和统计信息 */}
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={6}>
           <Card>
-            <Statistic 
-              title="在线车辆" 
-              value={vehicles.filter(v => v.status !== VehicleStatus.OFFLINE).length} 
+            <Statistic
+              title="在线车辆"
+              value={vehicles.filter(v => v.status !== VehicleStatus.OFFLINE).length}
               prefix={<CarOutlined />}
               valueStyle={{ color: '#3f8600' }}
             />
@@ -854,8 +859,8 @@ const LogisticsTracking: React.FC = () => {
         </Col>
         <Col span={6}>
           <Card>
-            <Statistic 
-              title="配送中订单" 
+            <Statistic
+              title="配送中订单"
               value={deliveryTasks.filter(t => t.status === DeliveryStatus.IN_TRANSIT).length}
               prefix={<EnvironmentOutlined />}
               valueStyle={{ color: '#1890ff' }}
@@ -864,8 +869,8 @@ const LogisticsTracking: React.FC = () => {
         </Col>
         <Col span={6}>
           <Card>
-            <Statistic 
-              title="今日完成" 
+            <Statistic
+              title="今日完成"
               value={deliveryTasks.filter(t => t.status === DeliveryStatus.DELIVERED).length}
               prefix={<CheckCircleOutlined />}
               valueStyle={{ color: '#52c41a' }}
@@ -874,8 +879,8 @@ const LogisticsTracking: React.FC = () => {
         </Col>
         <Col span={6}>
           <Card>
-            <Statistic 
-              title="平均配送时长" 
+            <Statistic
+              title="平均配送时长"
               value={45}
               suffix="分钟"
               prefix={<ClockCircleOutlined />}
@@ -909,7 +914,7 @@ const LogisticsTracking: React.FC = () => {
               {vehicles.map(renderVehicleCard)}
             </div>
           </Card>
-          
+
           {/* 配送任务列表 */}
           <Card title="配送任务" style={{ marginBottom: 16 }}>
             <div style={{ height: '200px', overflow: 'auto' }}>
@@ -954,7 +959,7 @@ const LogisticsTracking: React.FC = () => {
           {/* 轨迹回放控制 */}
           {renderPlaybackControls()}
         </Col>
-        
+
         {/* 右侧地图区域 */}
         <Col span={16}>
           <Card title="实时地图监控" style={{ height: '700px' }}>
@@ -1066,7 +1071,7 @@ const LogisticsTracking: React.FC = () => {
                 )}
               </MapContainer>
             </div>
-            
+
             {/* 地图图例 */}
             <div style={{ marginTop: 12, padding: '8px', background: '#f8f9fa', borderRadius: '4px' }}>
               <Space size="large">
@@ -1091,7 +1096,171 @@ const LogisticsTracking: React.FC = () => {
           </Card>
         </Col>
       </Row>
-      
+    </>
+  );
+
+  // 派送员视图布局（静态展示当前派送员的任务和地图）
+  const renderCourierView = () => {
+    const courierVehicle = vehicles.find(v => v.id === selectedCourierId) || vehicles[0];
+    const myTasks = deliveryTasks.filter(t => t.vehicleId === courierVehicle?.id);
+
+    return (
+      <Row gutter={16}>
+        {/* 左侧：当前派送员任务列表 */}
+        <Col span={8}>
+          <Card
+            title={
+              <Space>
+                <span>我的任务</span>
+                <Tag color="blue">{courierVehicle?.driver || '派送员'}</Tag>
+              </Space>
+            }
+            style={{ marginBottom: 16 }}
+          >
+            <div style={{ marginBottom: 8, fontSize: 12, color: '#666' }}>
+              今日任务：{myTasks.length} 单，运输中 {myTasks.filter(t => t.status === DeliveryStatus.IN_TRANSIT).length} 单
+            </div>
+            <div style={{ maxHeight: 520, overflow: 'auto' }}>
+              {myTasks.length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>
+                  暂无分配给该派送员的任务
+                </div>
+              ) : (
+                myTasks.map((task) => (
+                  <Card
+                    key={task.id}
+                    size="small"
+                    style={{ marginBottom: 8 }}
+                  >
+                    <Space direction="vertical" size={4}>
+                      <Space>
+                        <strong>{task.customerName}</strong>
+                        <Tag color={getDeliveryStatusInfo(task.status).color}>
+                          {getDeliveryStatusInfo(task.status).text}
+                        </Tag>
+                      </Space>
+                      <div style={{ fontSize: 12, color: '#666' }}>
+                        订单号：{task.orderId}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#999' }}>
+                        预计送达：{task.estimatedArrival.toLocaleTimeString()}
+                      </div>
+                    </Space>
+                  </Card>
+                ))
+              )}
+            </div>
+          </Card>
+        </Col>
+
+        {/* 右侧：派送员地图视图 */}
+        <Col span={16}>
+          <Card
+            title={
+              <Space>
+                <span>派送员地图视图</span>
+                {courierVehicle && (
+                  <span style={{ fontSize: 12, color: '#666' }}>
+                    当前车辆：{courierVehicle.licensePlate}（{courierVehicle.driver}）
+                  </span>
+                )}
+              </Space>
+            }
+            style={{ height: '700px' }}
+          >
+            <div style={{ position: 'relative', width: '100%', height: '600px' }}>
+              <MapContainer
+                center={courierVehicle?.position || mapCenter}
+                zoom={15}
+                controls={{ scale: true, toolBar: true, mapType: false }}
+                style={{ width: '100%', height: '100%' }}
+              >
+                {courierVehicle && (
+                  <MarkerLayer
+                    markers={[
+                      {
+                        id: courierVehicle.id,
+                        type: 'vehicle' as const,
+                        title: `${courierVehicle.licensePlate} - ${courierVehicle.driver}`,
+                        position: courierVehicle.position,
+                        icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png',
+                        createdAt: courierVehicle.lastUpdate,
+                        updatedAt: courierVehicle.lastUpdate,
+                        data: {},
+                      },
+                    ]}
+                  />
+                )}
+                {myTasks.length > 0 && (
+                  <MarkerLayer
+                    markers={myTasks.map((t) => ({
+                      id: t.id,
+                      type: 'store' as const,
+                      title: `收件人：${t.customerName}`,
+                      position: t.deliveryAddress,
+                      icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+                      createdAt: t.estimatedArrival,
+                      updatedAt: t.estimatedArrival,
+                      data: {},
+                    }))}
+                  />
+                )}
+              </MapContainer>
+            </div>
+          </Card>
+        </Col>
+      </Row>
+    );
+  };
+
+  return (
+    <div style={{ padding: 16 }}>
+      {/* 顶部：角色切换 + 全局信息 */}
+      <Card style={{ marginBottom: 16 }}>
+        <Row justify="space-between" align="middle">
+          <Col>
+            <Space direction="vertical" size={4}>
+              <div style={{ fontSize: 18, fontWeight: 600 }}>物流追踪中心</div>
+              <div style={{ fontSize: 12, color: '#888' }}>
+                可视化监控车辆与订单，支持管理员派货与派送员送货两种视图
+              </div>
+            </Space>
+          </Col>
+          <Col>
+            <Space>
+              <span style={{ fontSize: 12, color: '#666' }}>当前身份：</span>
+              <Select<UserRole>
+                value={userRole}
+                onChange={(v) => setUserRole(v)}
+                style={{ width: 120 }}
+                size="small"
+                options={[
+                  { value: 'admin', label: '管理员' },
+                  { value: 'courier', label: '派送员' },
+                ]}
+              />
+              {userRole === 'courier' && (
+                <>
+                  <span style={{ fontSize: 12, color: '#666' }}>派送员：</span>
+                  <Select<string>
+                    value={selectedCourierId}
+                    onChange={(v) => setSelectedCourierId(v)}
+                    style={{ width: 140 }}
+                    size="small"
+                    options={vehicles.map((v) => ({
+                      value: v.id,
+                      label: `${v.driver}（${v.licensePlate}）`,
+                    }))}
+                  />
+                </>
+              )}
+            </Space>
+          </Col>
+        </Row>
+      </Card>
+
+      {userRole === 'admin' ? renderAdminView() : renderCourierView()}
+
       {/* 任务详情弹窗 */}
       <Modal
         title="配送任务详情"
