@@ -62,14 +62,6 @@ const MapContainer: React.FC<MapContainerProps> = ({
     startPosition,
     endPosition,
   }) => {
-    // 调试：打印接收到的props
-    console.log('🎯 MapContainer: 接收到的功能props -', {
-      showTraffic,
-      showSubway,
-      measureMode,
-      mapType,
-      zoom
-    });
     const mapRef = useRef<HTMLDivElement>(null);
     const mapInstanceRef = useRef<any>(null);
     const controlsRef = useRef<{ scale?: any; toolBar?: any; mapType?: any }>({});
@@ -309,19 +301,27 @@ const MapContainer: React.FC<MapContainerProps> = ({
     }, [mapType]);
     // 响应地图中心点变化
     useEffect(() => {
-        console.log('MapContainer: center changed to:', center);
         if (mapInstanceRef.current && center) {
-            console.log('MapContainer: setting center to:', [center.lng, center.lat]);
-            // 使用高德地图的 setCenter 方法移动地图中心
-            mapInstanceRef.current.setCenter([center.lng, center.lat]);
+            const map = mapInstanceRef.current;
+            const currentCenter = map.getCenter();
+            // 只有当新的中心点与当前中心点不同时才更新（避免不必要的更新）
+            if (!currentCenter || 
+                Math.abs(currentCenter.lng - center.lng) > 0.0001 || 
+                Math.abs(currentCenter.lat - center.lat) > 0.0001) {
+                // 使用高德地图的 setCenter 方法移动地图中心
+                map.setCenter([center.lng, center.lat]);
+            }
         }
     }, [center]);
     // MapContainer 响应 zoom 变化
     useEffect(() => {
-        console.log('MapContainer: zoom changed to:', zoom);
-        if (mapInstanceRef.current && zoom) {
-            console.log('MapContainer: setting zoom to:', zoom);
-            mapInstanceRef.current.setZoom(zoom);
+        if (mapInstanceRef.current && zoom !== undefined) {
+            const map = mapInstanceRef.current;
+            const currentZoom = map.getZoom();
+            // 只有当新的缩放级别与当前缩放级别不同时才更新（避免不必要的更新）
+            if (currentZoom === undefined || Math.abs(currentZoom - zoom) > 0.1) {
+                map.setZoom(zoom);
+            }
         }
     }, [zoom]);
 
@@ -499,52 +499,42 @@ const MapContainer: React.FC<MapContainerProps> = ({
 
     // 处理路线显示
     useEffect(() => {
-        console.log('🛣️ MapContainer: 路线显示变化 - routeVisible:', routeVisible, '路径点数:', routePath.length);
         if (mapInstanceRef.current && (window as any).AMap) {
             const map = mapInstanceRef.current;
             const AMap = (window as any).AMap;
 
             if (routeVisible && routePath.length > 0) {
                 // 显示路线
-                console.log('🛣️ MapContainer: 显示路线路径...');
-                console.log('🛣️ MapContainer: 路径数据:', routePath);
-                console.log('🛣️ MapContainer: AMap.Polyline可用:', typeof AMap.Polyline);
 
                 try {
 
                 // 强制清除旧的路线图层和标记（如果存在）
                 if (routeLayerRef.current) {
                     try {
-                        console.log('🛣️ MapContainer: 清除旧的路线图层...');
                         map.remove(routeLayerRef.current);
                         routeLayerRef.current = null;
                     } catch (e) {
-                        console.log('🛣️ MapContainer: 清除旧路线失败:', (e as Error).message);
+                        // 忽略清除错误
                     }
                 }
 
                 // 清除旧的路线标记
                 if (routeMarkersRef.current.length > 0) {
                     try {
-                        console.log('🛣️ MapContainer: 清除旧的路线标记...');
                         routeMarkersRef.current.forEach(marker => {
                             map.remove(marker);
                         });
                         routeMarkersRef.current = [];
                     } catch (e) {
-                        console.log('🛣️ MapContainer: 清除旧标记失败:', (e as Error).message);
+                        // 忽略清除错误
                     }
                 }
 
                 // 创建新的路线图层
-                console.log('🛣️ MapContainer: 开始创建路径点...');
                 const pathPoints = routePath.map(point => {
-                    console.log('🛣️ MapContainer: 创建路径点:', point);
                     return new AMap.LngLat(point.lng, point.lat);
                 });
-                console.log('🛣️ MapContainer: 路径点创建完成:', pathPoints.length, '个点');
 
-                console.log('🛣️ MapContainer: 创建Polyline...');
                 routeLayerRef.current = new AMap.Polyline({
                     map: map,
                     path: pathPoints,
@@ -554,13 +544,9 @@ const MapContainer: React.FC<MapContainerProps> = ({
                     lineJoin: 'round',
                     lineCap: 'round'
                 });
-                console.log('🛣️ MapContainer: Polyline创建成功:', routeLayerRef.current);
 
                 // 添加起点和终点标记
-                console.log('🛣️ MapContainer: 创建标记 - startPosition:', startPosition, 'endPosition:', endPosition);
-
                 if (startPosition) {
-                    console.log('🛣️ MapContainer: 添加起点标记...');
                     const startMarker = new AMap.Marker({
                         map: map,
                         position: new AMap.LngLat(startPosition.lng, startPosition.lat),
@@ -571,7 +557,6 @@ const MapContainer: React.FC<MapContainerProps> = ({
                 }
 
                 if (endPosition) {
-                    console.log('🛣️ MapContainer: 添加终点标记...');
                     const endMarker = new AMap.Marker({
                         map: map,
                         position: new AMap.LngLat(endPosition.lng, endPosition.lat),
@@ -580,10 +565,6 @@ const MapContainer: React.FC<MapContainerProps> = ({
                     });
                     routeMarkersRef.current.push(endMarker);
                 }
-
-                console.log('🛣️ MapContainer: 标记创建完成，当前标记数量:', routeMarkersRef.current.length);
-
-                    console.log('✅ MapContainer: 路线图层创建成功');
                 } catch (e) {
                     console.error('❌ MapContainer: 路线图层创建失败:', e);
                     console.error('❌ MapContainer: 错误详情:', {
@@ -596,35 +577,28 @@ const MapContainer: React.FC<MapContainerProps> = ({
                 }
             } else {
                 // 隐藏路线
-                console.log('🛣️ MapContainer: 隐藏路线路径...');
-
                 // 清除路线图层
                 if (routeLayerRef.current) {
                     try {
                         map.remove(routeLayerRef.current);
                         routeLayerRef.current = null;
-                        console.log('✅ MapContainer: 路线图层移除成功');
                     } catch (e) {
-                        console.log('🛣️ MapContainer: 路线图层移除失败:', (e as Error).message);
+                        // 忽略移除错误
                     }
                 }
 
                 // 清除路线标记
                 if (routeMarkersRef.current.length > 0) {
                     try {
-                        console.log('🛣️ MapContainer: 清除路线标记...');
                         routeMarkersRef.current.forEach(marker => {
                             map.remove(marker);
                         });
                         routeMarkersRef.current = [];
-                        console.log('✅ MapContainer: 路线标记清除成功');
                     } catch (e) {
-                        console.log('🛣️ MapContainer: 清除路线标记失败:', (e as Error).message);
+                        // 忽略清除错误
                     }
                 }
             }
-        } else {
-            console.log('🛣️ MapContainer: 地图未准备好或AMap未加载');
         }
     }, [routeVisible, routePath]);
 

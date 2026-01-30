@@ -46,9 +46,6 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
         const AMap = (window as any).AMap;
         const map = (window as any).currentMap;
 
-    console.log('MarkerLayer: 收到标记', markers.length, '个');
-    markers.forEach(marker => console.log('MarkerLayer: 标记类型:', marker.type, '标题:', marker.title));
-
     // 获取现有的标记ID
     const existingIds = new Set(Object.keys(markersRef.current));
     const newIds = new Set(markers.map(m => m.id));
@@ -152,10 +149,14 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
   const getMarkerIcon = (marker: Marker, AMap: any) => {
     // 如果标记有自定义图标，使用自定义图标
     if (marker.icon) {
+      // 如果是 SVG 图标（data:image/svg+xml），使用更大的尺寸
+      const isSvg = marker.icon.startsWith('data:image/svg+xml');
+      const iconSize = isSvg ? 40 : 19;
+      const iconHeight = isSvg ? 40 : 31;
       return new AMap.Icon({
         image: marker.icon,
-        size: new AMap.Size(19, 31),
-        imageSize: new AMap.Size(19, 31),
+        size: new AMap.Size(iconSize, iconHeight),
+        imageSize: new AMap.Size(iconSize, iconHeight),
       });
     }
 

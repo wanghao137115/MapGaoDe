@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';  // React核心hooks
+import React, { useState, useCallback, useEffect, useRef } from 'react';  // React核心hooks
 import { 
   Card,          // 卡片容器组件
   Row,           // 栅格行组件  
@@ -33,6 +33,8 @@ import {
   MenuUnfoldOutlined, // 展开图标
   UpOutlined,         // 向上收起
   DownOutlined,       // 向下展开
+  ShoppingOutlined,   // 购物/取货图标
+  UserOutlined,       // 用户头像图标
 } from '@ant-design/icons'; // Ant Design图标库
 
 import MapContainer from '@/components/Map/MapContainer';  // 地图容器组件
@@ -49,7 +51,9 @@ import type { MapPosition, Marker } from '@/types';         // 类型定义
 enum VehicleStatus {
   IDLE = 'idle',           // 空闲状态
   EN_ROUTE = 'en_route',   // 行驶中
-  DELIVERING = 'delivering', // 配送中
+  DELIVERING = 'delivering', // 已分配任务（派送中）
+  PICKING_UP = 'picking_up', // 取货中
+  DELIVERING_GOODS = 'delivering_goods', // 送货中
   MAINTENANCE = 'maintenance', // 维修中
   OFFLINE = 'offline'      // 离线状态
 }
@@ -174,15 +178,10 @@ const LogisticsTracking: React.FC = () => {
   // 配送任务列表状态 - 一开始没有任务（只有确认派送后才出现）
   const [deliveryTasks, setDeliveryTasks] = useState<DeliveryTask[]>([]);
   
-  // 快递站位置（区域内随机生成）
-  const [warehousePosition] = useState<MapPosition>(() => {
-    // 基于地图中心点，在区域内随机生成快递站位置
-    const baseLng = 116.3974;
-    const baseLat = 39.9093;
-    return {
-      lng: baseLng + (Math.random() - 0.5) * 0.05,
-      lat: baseLat + (Math.random() - 0.5) * 0.05
-    };
+  // 快递站位置（根据用户位置动态设置，默认为深圳）
+  const [warehousePosition, setWarehousePosition] = useState<MapPosition>(() => {
+    // 默认设置为深圳（如果用户位置未获取到）
+    return { lng: 114.0579, lat: 22.5431 }; // 深圳中心坐标
   });
 
   // 轨迹回放相关状态
@@ -203,6 +202,9 @@ const LogisticsTracking: React.FC = () => {
 
   // 车辆轨迹状态 - 实时轨迹
   const [activeRoutes, setActiveRoutes] = useState<{[vehicleId: string]: MapPosition[]}>({}); // 正在行驶车辆的实时轨迹
+  
+  // 车辆当前目标位置（用于跟踪车辆是去快递站还是去收货点）
+  const [vehicleTargets, setVehicleTargets] = useState<{[vehicleId: string]: MapPosition | null}>({}); // 车辆当前目标位置
 
   // 配送节点状态
   const [deliveryNodes, setDeliveryNodes] = useState<{[taskId: string]: DeliveryNode[]}>({}); // 配送任务的时间线节点
@@ -212,6 +214,14 @@ const LogisticsTracking: React.FC = () => {
   const [userRole, setUserRole] = useState<UserRole>('admin');
   // 当前查看的派送员（这里用车辆模拟，一个车辆=一个派送员）
   const [selectedCourierId, setSelectedCourierId] = useState<string>('v001');
+
+  // 派送员视图：右侧选中的任务详情（用于替换地图显示）
+  const [courierDetailTask, setCourierDetailTask] = useState<DeliveryTask | null>(null);
+  
+  // 派送员导航状态
+  const [courierNavigatingTo, setCourierNavigatingTo] = useState<'warehouse' | 'delivery' | null>(null); // 导航目标：快递站或收货点
+  const [courierRouteVisible, setCourierRouteVisible] = useState<boolean>(false); // 是否显示导航路线
+  const [courierRoutePath, setCourierRoutePath] = useState<MapPosition[]>([]); // 导航路线路径
   
   // 管理员视图面板折叠状态
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState<boolean>(false);
@@ -219,11 +229,83 @@ const LogisticsTracking: React.FC = () => {
   const [vehiclePanelCollapsed, setVehiclePanelCollapsed] = useState<boolean>(false);
   const [taskPanelCollapsed, setTaskPanelCollapsed] = useState<boolean>(false);
 
+  // 地图交互状态：跟踪用户是否手动操作了地图
+  const [userHasInteractedWithMap, setUserHasInteractedWithMap] = useState<boolean>(false);
+  const userHasInteractedWithMapRef = useRef<boolean>(false); // 使用 ref 存储，避免依赖问题
+  const mapInstanceRef = useRef<any>(null); // 存储地图实例
+  const isProgrammaticUpdateRef = useRef<boolean>(false); // 标记是否是程序自动更新
+
+  // 处理地图就绪，存储地图实例并监听用户交互
+  const handleMapReady = useCallback((map: any) => {
+    mapInstanceRef.current = map;
+    
+    // 监听地图移动结束事件
+    const onMoveEnd = () => {
+      if (!isProgrammaticUpdateRef.current) {
+        // 用户手动操作，更新状态以保持用户设置的位置和缩放
+        const center = map.getCenter();
+        const zoom = map.getZoom();
+        if (center) {
+          setMapCenter({ lng: center.lng, lat: center.lat });
+        }
+        if (zoom !== undefined) {
+          setMapZoom(zoom);
+        }
+        userHasInteractedWithMapRef.current = true;
+        setUserHasInteractedWithMap(true);
+      } else {
+      }
+      isProgrammaticUpdateRef.current = false;
+    };
+    
+    // 监听地图缩放结束事件
+    const onZoomEnd = () => {
+      if (!isProgrammaticUpdateRef.current) {
+        // 用户手动操作，更新状态以保持用户设置的缩放级别
+        const center = map.getCenter();
+        const zoom = map.getZoom();
+        if (center) {
+          setMapCenter({ lng: center.lng, lat: center.lat });
+        }
+        if (zoom !== undefined) {
+          setMapZoom(zoom);
+        }
+        userHasInteractedWithMapRef.current = true;
+        setUserHasInteractedWithMap(true);
+      } else {
+      }
+      isProgrammaticUpdateRef.current = false;
+    };
+    
+    // 监听地图拖拽开始事件（用户开始手动操作）
+    const onDragStart = () => {
+      isProgrammaticUpdateRef.current = false;
+    };
+    
+    // 监听地图缩放开始事件（用户开始手动操作）
+    const onZoomStart = () => {
+      isProgrammaticUpdateRef.current = false;
+    };
+    
+    map.on('moveend', onMoveEnd);
+    map.on('zoomend', onZoomEnd);
+    map.on('dragstart', onDragStart);
+    map.on('zoomstart', onZoomStart);
+    
+    // 注意：这里不返回清理函数，因为地图实例是持久的
+    // 如果需要清理，应该在组件卸载时处理
+  }, []);
+
   // 当获取到用户位置时，更新地图中心点
+  // 但如果用户已经手动操作了地图，则不再自动更新
   useEffect(() => {
     if (userPosition) {
+      if (!userHasInteractedWithMapRef.current) {
+        isProgrammaticUpdateRef.current = true; // 标记为程序自动更新
       setMapCenter(userPosition);
       setMapZoom(14); // 设置合适的缩放级别
+      } else {
+      }
       // 同时更新车辆的初始位置为用户当前位置附近
       setVehicles(prevVehicles =>
         prevVehicles.map((vehicle, index) => ({
@@ -234,6 +316,11 @@ const LogisticsTracking: React.FC = () => {
           }
         }))
       );
+      // 更新快递站位置到用户位置附近（在用户位置附近5-10公里范围内）
+      setWarehousePosition({
+        lng: userPosition.lng + (Math.random() - 0.5) * 0.1,
+        lat: userPosition.lat + (Math.random() - 0.5) * 0.1
+      });
     }
   }, [userPosition]);
 
@@ -300,7 +387,11 @@ const LogisticsTracking: React.FC = () => {
       case VehicleStatus.EN_ROUTE:
         return { color: 'processing', text: '行驶中', icon: <CarOutlined /> };
       case VehicleStatus.DELIVERING:
-        return { color: 'success', text: '配送中', icon: <EnvironmentOutlined /> };
+        return { color: 'success', text: '派送中', icon: <UserOutlined /> };
+      case VehicleStatus.PICKING_UP:
+        return { color: 'processing', text: '取货中', icon: <ShoppingOutlined /> };
+      case VehicleStatus.DELIVERING_GOODS:
+        return { color: 'warning', text: '送货中', icon: <CarOutlined /> };
       case VehicleStatus.MAINTENANCE:
         return { color: 'warning', text: '维修中', icon: <ExclamationCircleOutlined /> };
       case VehicleStatus.OFFLINE:
@@ -383,24 +474,34 @@ const LogisticsTracking: React.FC = () => {
     }, [vehicles]);
 
     // 当车辆状态或位置变化时，如果有行驶车辆则更新地图中心点
+    // 但如果用户手动操作了地图，则不再自动更新
     useEffect(() => {
+      if (userHasInteractedWithMapRef.current) {
+        return; // 用户已手动操作地图，不再自动更新
+      }
       const newCenter = calculateMapCenter();
       if (newCenter) {
+        isProgrammaticUpdateRef.current = true; // 标记为程序自动更新
         setMapCenter(newCenter);
       }
-    }, [calculateMapCenter]);
+    }, [calculateMapCenter]); // 移除 userHasInteractedWithMap 依赖，使用 ref 检查
 
     // 处理任务状态更新
     const handleTaskStatusUpdate = useCallback((taskId: string, newStatus: DeliveryStatus) => {
-      setDeliveryTasks(prevTasks =>
-        prevTasks.map(task =>
+      let foundTask: DeliveryTask | undefined;
+      
+      setDeliveryTasks(prevTasks => {
+        // 在更新前找到任务
+        foundTask = prevTasks.find(t => t.id === taskId);
+        // 更新任务状态
+        return prevTasks.map(task =>
           task.id === taskId ? { ...task, status: newStatus } : task
-        )
       );
+      });
   
       // 同步更新对应车辆的状态
-      const task = deliveryTasks.find(t => t.id === taskId);
-      if (task) {
+      if (foundTask) {
+        const task = foundTask;
         let newVehicleStatus: VehicleStatus;
         switch (newStatus) {
           case DeliveryStatus.DELIVERED:
@@ -414,7 +515,12 @@ const LogisticsTracking: React.FC = () => {
            
             break;
           case DeliveryStatus.IN_TRANSIT:
-            newVehicleStatus = VehicleStatus.EN_ROUTE; // 任务开始运输，车辆变为行驶中
+            // 任务开始运输，车辆状态保持当前状态（可能是DELIVERING_GOODS）
+            // 如果当前不是送货中状态，则设为行驶中
+            const currentVehicle = vehicles.find(v => v.id === task.vehicleId);
+            newVehicleStatus = currentVehicle?.status === VehicleStatus.DELIVERING_GOODS 
+              ? VehicleStatus.DELIVERING_GOODS 
+              : VehicleStatus.EN_ROUTE;
             // 初始化该车辆的实时轨迹
             setActiveRoutes(prev => ({
               ...prev,
@@ -422,7 +528,7 @@ const LogisticsTracking: React.FC = () => {
             }));
             break;
           case DeliveryStatus.ASSIGNED:
-            newVehicleStatus = VehicleStatus.IDLE; // 任务已分配但未开始运输，车辆空闲
+            newVehicleStatus = VehicleStatus.DELIVERING; // 任务已分配，车辆状态为派送中（显示头像）
             break;
           default:
             newVehicleStatus = VehicleStatus.IDLE; // 其他状态下车辆空闲
@@ -471,25 +577,28 @@ const LogisticsTracking: React.FC = () => {
     setVehicles(prevVehicles =>
       prevVehicles.map(vehicle => {
         if (vehicle.status === VehicleStatus.EN_ROUTE) {
-          // 找到该车辆的配送任务
+          // 获取车辆当前目标位置（可能是快递站或收货点）
+          const targetPos = vehicleTargets[vehicle.id];
+          if (!targetPos) {
+            // 如果没有设置目标，尝试从任务中获取
           const task = deliveryTasks.find(t => t.vehicleId === vehicle.id && t.status === DeliveryStatus.IN_TRANSIT);
-          if (task) {
+            if (!task) return vehicle;
+            // 使用收货点作为目标
+            const target = task.deliveryAddress;
             // 计算车辆当前位置到目的地的距离
             const distance = Math.sqrt(
-              Math.pow(task.deliveryAddress.lng - vehicle.position.lng, 2) +
-              Math.pow(task.deliveryAddress.lat - vehicle.position.lat, 2)
+              Math.pow(target.lng - vehicle.position.lng, 2) +
+              Math.pow(target.lat - vehicle.position.lat, 2)
             );
 
             if (distance < 0.001) {
               // 到达目的地，更新任务状态为已送达
               setTimeout(() => {
-                // 直接更新任务状态
                 setDeliveryTasks(prevTasks =>
                   prevTasks.map(t =>
                     t.id === task.id ? { ...t, status: DeliveryStatus.DELIVERED } : t
                   )
                 );
-                // 更新车辆状态为空闲
                 setVehicles(prevVehicles =>
                   prevVehicles.map(v =>
                     v.id === task.vehicleId
@@ -497,13 +606,16 @@ const LogisticsTracking: React.FC = () => {
                       : v
                   )
                 );
-                // 清除该车辆的实时轨迹
                 setActiveRoutes(prev => {
                   const newRoutes = { ...prev };
                   delete newRoutes[task.vehicleId];
                   return newRoutes;
                 });
-                // 更新配送节点
+                setVehicleTargets(prev => {
+                  const newTargets = { ...prev };
+                  delete newTargets[task.vehicleId];
+                  return newTargets;
+                });
                 const updatedTask = { ...task, status: DeliveryStatus.DELIVERED };
                 const nodes = generateDeliveryNodes(updatedTask);
                 setDeliveryNodes(prev => ({
@@ -514,14 +626,51 @@ const LogisticsTracking: React.FC = () => {
               }, 1000);
               return vehicle;
             } else {
-              // 向目的地移动 - 根据优先级设置不同速度
-              const baseSpeed = task.priority === DeliveryPriority.URGENT ? 0.001 : 0.0005; // 加急更快
-              const directionLng = (task.deliveryAddress.lng - vehicle.position.lng) / distance;
-              const directionLat = (task.deliveryAddress.lat - vehicle.position.lat) / distance;
-
+              // 向目的地移动
+              const baseSpeed = task.priority === DeliveryPriority.URGENT ? 0.001 : 0.0005;
+              const directionLng = (target.lng - vehicle.position.lng) / distance;
+              const directionLat = (target.lat - vehicle.position.lat) / distance;
               const newLng = vehicle.position.lng + directionLng * baseSpeed;
               const newLat = vehicle.position.lat + directionLat * baseSpeed;
-              const newSpeed = Math.round(distance * 1000); // 根据距离计算速度
+              const newSpeed = Math.round(distance * 1000);
+              const updatedVehicle = {
+                ...vehicle,
+                position: { lng: newLng, lat: newLat },
+                speed: newSpeed,
+                lastUpdate: new Date(),
+                batteryLevel: Math.max(0, vehicle.batteryLevel - Math.random() * 0.05)
+              };
+              setActiveRoutes(prev => ({
+                ...prev,
+                [vehicle.id]: [...(prev[vehicle.id] || []), updatedVehicle.position]
+              }));
+              return updatedVehicle;
+            }
+          } else {
+            // 使用设置的目标位置
+            // 计算车辆当前位置到目的地的距离
+            const distance = Math.sqrt(
+              Math.pow(targetPos.lng - vehicle.position.lng, 2) +
+              Math.pow(targetPos.lat - vehicle.position.lat, 2)
+            );
+            
+            // 找到该车辆的任务（用于获取优先级等信息）
+            const task = deliveryTasks.find(t => t.vehicleId === vehicle.id);
+            const priority = task?.priority || DeliveryPriority.NORMAL;
+            
+            if (distance < 0.001) {
+              // 到达目标位置
+              // 如果目标是快递站，等待派送员确认取货
+              // 如果目标是收货点，等待派送员确认送货
+              return vehicle;
+            } else {
+              // 向目标位置移动
+              const baseSpeed = priority === DeliveryPriority.URGENT ? 0.001 : 0.0005;
+              const directionLng = (targetPos.lng - vehicle.position.lng) / distance;
+              const directionLat = (targetPos.lat - vehicle.position.lat) / distance;
+              const newLng = vehicle.position.lng + directionLng * baseSpeed;
+              const newLat = vehicle.position.lat + directionLat * baseSpeed;
+              const newSpeed = Math.round(distance * 1000);
 
               const updatedVehicle = {
                 ...vehicle,
@@ -532,10 +681,13 @@ const LogisticsTracking: React.FC = () => {
               };
 
               // 为正在行驶的车辆记录实时轨迹
-              setActiveRoutes(prev => ({
+              setActiveRoutes(prev => {
+                const newRoutes = {
                 ...prev,
                 [vehicle.id]: [...(prev[vehicle.id] || []), updatedVehicle.position]
-              }));
+                };
+                return newRoutes;
+              });
 
               return updatedVehicle;
             }
@@ -544,7 +696,7 @@ const LogisticsTracking: React.FC = () => {
         return vehicle;
       })
     );
-  }, [deliveryTasks, handleTaskStatusUpdate]);
+  }, [deliveryTasks, handleTaskStatusUpdate, selectedVehicleId, vehicleTargets, generateDeliveryNodes]);
 
 
 
@@ -576,7 +728,7 @@ const LogisticsTracking: React.FC = () => {
     }
     
     setTrackPoints(mockTrackPoints);
-  }, [vehicles]);
+  }, [vehicles, activeRoutes]);
 
   // 处理轨迹播放控制
   const handlePlaybackToggle = useCallback(() => {
@@ -625,13 +777,17 @@ const LogisticsTracking: React.FC = () => {
 
     // 根据优先级计算预计送达时间（加急更快）
     const baseTime = assignPriority === DeliveryPriority.URGENT ? 900000 : 1800000; // 加急15分钟，普通30分钟
+    
+    // 取货点固定为快递站：所有快递都在快递站取货
+    const pickupPos = warehousePosition;
+
     const newTask: DeliveryTask = {
       id: `t${Date.now()}`,
       vehicleId: assigningVehicleId,
       orderId: `ORD${Date.now()}`,
       customerName: ['张三', '李四', '王五', '赵六'][Math.floor(Math.random() * 4)],
       customerPhone: `138${Math.floor(Math.random() * 90000000 + 10000000)}`,
-      pickupAddress: warehousePosition, // 快递站位置
+      pickupAddress: pickupPos, // 固定为快递站位置
       deliveryAddress: assignDeliveryAddress, // 用户设置的终点
       status: DeliveryStatus.ASSIGNED,
       priority: assignPriority,
@@ -642,6 +798,16 @@ const LogisticsTracking: React.FC = () => {
 
     setDeliveryTasks(prev => [...prev, newTask]);
 
+    // 管理员派单后：车辆状态变为“派送中/已派单”（但不移动）
+    // 车辆真正开始移动仍然由派送员点击“导航到快递站”触发（EN_ROUTE）
+    setVehicles(prevVehicles =>
+      prevVehicles.map(v =>
+        v.id === assigningVehicleId
+          ? { ...v, status: VehicleStatus.DELIVERING, lastUpdate: new Date() }
+          : v
+      )
+    );
+
     // 生成初始配送节点
     const initialNodes = generateDeliveryNodes(newTask);
     setDeliveryNodes(prev => ({
@@ -649,47 +815,15 @@ const LogisticsTracking: React.FC = () => {
       [newTask.id]: initialNodes
     }));
 
-    message.success(`已为 ${vehicle.licensePlate} 分配${assignPriority === DeliveryPriority.URGENT ? '加急' : '普通'}配送任务`);
+    message.success(`已为 ${vehicle.licensePlate} 分配${assignPriority === DeliveryPriority.URGENT ? '加急' : '普通'}配送任务（取货点：快递站），等待派送员开始导航`);
 
     // 关闭弹窗
     setShowAssignModal(false);
     setAssigningVehicleId('');
     setAssignDeliveryAddress(null);
 
-    // 自动开始运输（模拟）
-    setTimeout(() => {
-      // 更新任务状态为运输中
-      setDeliveryTasks(prevTasks =>
-        prevTasks.map(task =>
-          task.id === newTask.id ? { ...task, status: DeliveryStatus.IN_TRANSIT } : task
-        )
-      );
-
-      // 更新车辆状态为行驶中
-      setVehicles(prevVehicles =>
-        prevVehicles.map(v =>
-          v.id === assigningVehicleId
-            ? { ...v, status: VehicleStatus.EN_ROUTE, lastUpdate: new Date() }
-            : v
-        )
-      );
-
-      // 初始化该车辆的实时轨迹
-      setActiveRoutes(prev => ({
-        ...prev,
-        [assigningVehicleId]: [warehousePosition]
-      }));
-
-      // 更新配送节点
-      const transitTask = { ...newTask, status: DeliveryStatus.IN_TRANSIT };
-      const nodes = generateDeliveryNodes(transitTask);
-      setDeliveryNodes(prev => ({
-        ...prev,
-        [newTask.id]: nodes
-      }));
-
-      message.success('车辆开始运输');
-    }, 2000); // 2秒后开始运输
+    // 注意：不再自动开始运输，车辆保持空闲状态
+    // 只有当派送员点击"导航到快递站"并确认取货后，车辆才会开始移动
   }, [vehicles, assignDeliveryAddress, assignPriority, assigningVehicleId, warehousePosition, generateDeliveryNodes]);
 
   // 处理路径规划
@@ -720,7 +854,7 @@ const LogisticsTracking: React.FC = () => {
 
   // 实时位置更新定时器
   useEffect(() => {
-    const interval = setInterval(updateVehiclePositions, 5000); // 每5秒更新一次
+    const interval = setInterval(updateVehiclePositions, 1000); // 每1秒更新一次，让移动更流畅
     return () => clearInterval(interval);
   }, [updateVehiclePositions]);
   
@@ -787,6 +921,8 @@ const LogisticsTracking: React.FC = () => {
                     backgroundColor: vehicle.status === VehicleStatus.EN_ROUTE ? '#52c41a' :
                                    vehicle.status === VehicleStatus.IDLE ? '#1890ff' :
                                    vehicle.status === VehicleStatus.DELIVERING ? '#faad14' :
+                                   vehicle.status === VehicleStatus.PICKING_UP ? '#1890ff' :
+                                   vehicle.status === VehicleStatus.DELIVERING_GOODS ? '#fa8c16' :
                                    vehicle.status === VehicleStatus.MAINTENANCE ? '#ff4d4f' : '#d9d9d9'
                   }}
                 />
@@ -920,84 +1056,98 @@ const LogisticsTracking: React.FC = () => {
   const renderAdminView = () => (
     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', overflow: 'hidden', zIndex: 0 }}>
       {/* 全屏地图 */}
-      <MapContainer
-        center={mapCenter}
-        zoom={mapZoom}
-        controls={{ scale: true, toolBar: true, mapType: true }}
-        style={{ width: '100%', height: '100%' }}
+              <MapContainer
+                center={mapCenter}
+                zoom={mapZoom}
+                controls={{ scale: true, toolBar: true, mapType: true }}
+                style={{ width: '100%', height: '100%' }}
         onMapClick={handleMapClick}
-      >
-        {/* 车辆位置标记层 */}
-        <MarkerLayer
-          markers={vehicles.map(vehicle => {
-            // 根据车辆状态选择不同的图标颜色
-            let iconUrl = '';
-            switch (vehicle.status) {
-              case VehicleStatus.IDLE:
-                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png'; // 蓝色 - 空闲
+        onMapReady={handleMapReady}
+              >
+                {/* 车辆位置标记层 */}
+                <MarkerLayer
+                  markers={vehicles.map(vehicle => {
+            // 根据车辆状态选择不同的图标
+                    let iconUrl = '';
+                    switch (vehicle.status) {
+                      case VehicleStatus.IDLE:
+                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png'; // 蓝色 - 空闲
+                        break;
+                      case VehicleStatus.EN_ROUTE:
+                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png'; // 红色 - 行驶中
+                        break;
+                      case VehicleStatus.DELIVERING:
+                // 派送中状态显示头像图标
+                iconUrl = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+                  <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="20" cy="20" r="18" fill="#52c41a" stroke="white" stroke-width="2"/>
+                    <circle cx="20" cy="16" r="6" fill="white"/>
+                    <path d="M10 30 Q10 24 20 24 Q30 24 30 30" fill="white"/>
+                  </svg>
+                `)}`;
                 break;
-              case VehicleStatus.EN_ROUTE:
-                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png'; // 红色 - 行驶中
+              case VehicleStatus.PICKING_UP:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_y.png'; // 黄色 - 取货中
                 break;
-              case VehicleStatus.DELIVERING:
-                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_y.png'; // 黄色 - 配送中
-                break;
-              case VehicleStatus.MAINTENANCE:
-                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_p.png'; // 紫色 - 维修中
-                break;
-              case VehicleStatus.OFFLINE:
-                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png'; // 灰色 - 离线
-                break;
-              default:
-                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_bs.png';
-            }
+              case VehicleStatus.DELIVERING_GOODS:
+                iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png'; // 红色 - 送货中
+                        break;
+                      case VehicleStatus.MAINTENANCE:
+                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_p.png'; // 紫色 - 维修中
+                        break;
+                      case VehicleStatus.OFFLINE:
+                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png'; // 灰色 - 离线
+                        break;
+                      default:
+                        iconUrl = 'https://webapi.amap.com/theme/v1.3/markers/n/mark_bs.png';
+                    }
 
-            return {
-              id: vehicle.id,
-              type: 'vehicle' as const,
-              title: `${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`,
-              position: vehicle.position,
-              icon: iconUrl,
-              createdAt: vehicle.lastUpdate,
-              updatedAt: vehicle.lastUpdate,
-              data: {
-                status: vehicle.status === VehicleStatus.MAINTENANCE ? 'maintenance' :
-                        vehicle.status === VehicleStatus.OFFLINE ? 'inactive' :
-                        vehicle.status === VehicleStatus.IDLE ? 'inactive' : 'active',
-                batteryLevel: vehicle.batteryLevel,
-                speed: vehicle.speed,
-                temperature: vehicle.temperature,
-                lastUpdate: vehicle.lastUpdate
-              }
-            };
-          })}
-          onMarkerClick={(marker) => {
-            const vehicle = vehicles.find(v => v.id === marker.id);
-            if (vehicle) {
-              message.info(`${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`);
-            }
-          }}
-        />
+                    return {
+                      id: vehicle.id,
+                      type: 'vehicle' as const,
+                      title: `${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`,
+                      position: vehicle.position,
+                      icon: iconUrl,
+                      createdAt: vehicle.lastUpdate,
+                      updatedAt: vehicle.lastUpdate,
+                      data: {
+                        status: vehicle.status === VehicleStatus.MAINTENANCE ? 'maintenance' :
+                                vehicle.status === VehicleStatus.OFFLINE ? 'inactive' :
+                                vehicle.status === VehicleStatus.IDLE ? 'inactive' : 'active',
+                        batteryLevel: vehicle.batteryLevel,
+                        speed: vehicle.speed,
+                        temperature: vehicle.temperature,
+                        lastUpdate: vehicle.lastUpdate
+                      }
+                    };
+                  })}
+                  onMarkerClick={(marker) => {
+                    const vehicle = vehicles.find(v => v.id === marker.id);
+                    if (vehicle) {
+                      message.info(`${vehicle.licensePlate} - ${vehicle.driver} (${getVehicleStatusInfo(vehicle.status).text})`);
+                    }
+                  }}
+                />
 
-        {/* 搜索结果标记 */}
-        {searchMarkers.length > 0 && (
-          <MarkerLayer
-            markers={searchMarkers}
-            onMarkerClick={(marker) => {
-              message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
-            }}
-          />
-        )}
+                {/* 搜索结果标记 */}
+                {searchMarkers.length > 0 && (
+                  <MarkerLayer
+                    markers={searchMarkers}
+                    onMarkerClick={(marker) => {
+                      message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
+                    }}
+                  />
+                )}
 
-        {/* 确认的地点标记（星号） */}
-        {confirmedPlaceMarker && (
-          <MarkerLayer
-            markers={[confirmedPlaceMarker]}
-            onMarkerClick={(marker) => {
-              message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
-            }}
-          />
-        )}
+                {/* 确认的地点标记（星号） */}
+                {confirmedPlaceMarker && (
+                  <MarkerLayer
+                    markers={[confirmedPlaceMarker]}
+                    onMarkerClick={(marker) => {
+                      message.info(`${marker.title} - ${marker.data?.address || '暂无地址信息'}`);
+                    }}
+                  />
+                )}
 
         {/* 快递站位置标记 */}
         <MarkerLayer
@@ -1006,7 +1156,15 @@ const LogisticsTracking: React.FC = () => {
             type: 'warehouse' as const,
             title: '快递站',
             position: warehousePosition,
-            icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png',
+            icon: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+              <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="20" r="18" fill="#1890ff" stroke="white" stroke-width="2"/>
+                <path d="M12 18 L20 12 L28 18 L28 28 L12 28 Z" fill="white"/>
+                <rect x="15" y="20" width="10" height="6" fill="#1890ff"/>
+                <rect x="17" y="22" width="2" height="2" fill="white"/>
+                <rect x="21" y="22" width="2" height="2" fill="white"/>
+              </svg>
+            `)}`,
             createdAt: new Date(),
             updatedAt: new Date(),
             data: {
@@ -1019,6 +1177,53 @@ const LogisticsTracking: React.FC = () => {
           }}
         />
 
+        {/* 所有任务的取货点和收货点标记 */}
+        {deliveryTasks.map(task => {
+          const markers: any[] = [];
+          // 如果任务状态是已分配或运输中，显示取货地址
+          if (task.status === DeliveryStatus.ASSIGNED || task.status === DeliveryStatus.IN_TRANSIT) {
+            markers.push({
+              id: `pickup-${task.id}`,
+              type: 'store' as const,
+              title: `取货点：${task.orderId}`,
+              position: task.pickupAddress,
+              icon: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+                <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="20" cy="20" r="18" fill="#fa8c16" stroke="white" stroke-width="2"/>
+                  <rect x="12" y="14" width="16" height="12" rx="1" fill="white"/>
+                  <path d="M12 18 L20 14 L28 18" stroke="#fa8c16" stroke-width="2" fill="none"/>
+                  <line x1="16" y1="20" x2="16" y2="26" stroke="#fa8c16" stroke-width="1.5"/>
+                  <line x1="24" y1="20" x2="24" y2="26" stroke="#fa8c16" stroke-width="1.5"/>
+                </svg>
+              `)}`,
+              createdAt: task.estimatedArrival,
+              updatedAt: task.estimatedArrival,
+              data: { isPickup: true, taskId: task.id }
+            });
+          }
+          // 显示收货地址
+          markers.push({
+            id: `delivery-${task.id}`,
+            type: 'store' as const,
+            title: `收件人：${task.customerName}`,
+            position: task.deliveryAddress,
+            icon: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+              <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="20" r="18" fill="#52c41a" stroke="white" stroke-width="2"/>
+                <circle cx="20" cy="16" r="5" fill="white"/>
+                <path d="M12 28 Q12 24 20 24 Q28 24 28 28" fill="white"/>
+                <path d="M18 30 L20 32 L22 30" stroke="#52c41a" stroke-width="1.5" fill="none"/>
+              </svg>
+            `)}`,
+            createdAt: task.estimatedArrival,
+            updatedAt: task.estimatedArrival,
+            data: { isDelivery: true, taskId: task.id }
+          });
+          return markers.length > 0 ? (
+            <MarkerLayer key={task.id} markers={markers} />
+          ) : null;
+        })}
+
         {/* 派送终点标记（如果正在设置） */}
         {assignDeliveryAddress && (
           <MarkerLayer
@@ -1027,6 +1232,14 @@ const LogisticsTracking: React.FC = () => {
               type: 'store' as const,
               title: '配送终点',
               position: assignDeliveryAddress,
+              icon: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+                <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="20" cy="20" r="18" fill="#52c41a" stroke="white" stroke-width="2"/>
+                  <circle cx="20" cy="16" r="5" fill="white"/>
+                  <path d="M12 28 Q12 24 20 24 Q28 24 28 28" fill="white"/>
+                  <path d="M18 30 L20 32 L22 30" stroke="#52c41a" stroke-width="1.5" fill="none"/>
+                </svg>
+              `)}`,
               createdAt: new Date(),
               updatedAt: new Date(),
               data: {
@@ -1034,37 +1247,37 @@ const LogisticsTracking: React.FC = () => {
                 isAssignDestination: true
               }
             }]}
-          />
+                  />
+                )}
+
+                {/* 轨迹回放路径 */}
+                {selectedVehicleId && trackPoints.length > 0 && (
+                  <RouteLayer
+                    polyline={isPlaying ? trackPoints.slice(0, currentTrackIndex + 1).map(p => p.position) : []}
+                    mode="driving"
+                    visible={true}
+                  />
+                )}
+
+        {/* 实时车辆轨迹 - 只显示选中车辆的轨迹 */}
+        {selectedVehicleId && activeRoutes[selectedVehicleId] && (
+                  <RouteLayer
+            key={`active-${selectedVehicleId}`}
+            polyline={activeRoutes[selectedVehicleId]}
+                    mode="driving"
+                    visible={true}
+                  />
         )}
 
-        {/* 轨迹回放路径 */}
-        {selectedVehicleId && trackPoints.length > 0 && (
-          <RouteLayer
-            polyline={isPlaying ? trackPoints.slice(0, currentTrackIndex + 1).map(p => p.position) : []}
-            mode="driving"
-            visible={true}
-          />
-        )}
-
-        {/* 实时车辆轨迹 */}
-        {Object.entries(activeRoutes).map(([vehicleId, route]) => (
-          <RouteLayer
-            key={`active-${vehicleId}`}
-            polyline={route}
-            mode="driving"
-            visible={true}
-          />
-        ))}
-
-        {/* 配送路线 */}
-        {routeResult && (
-          <RouteLayer
-            polyline={routeResult.data?.polyline || []}
-            mode="driving"
-            visible={true}
-          />
-        )}
-      </MapContainer>
+                {/* 配送路线 */}
+                {routeResult && (
+                  <RouteLayer
+                    polyline={routeResult.data?.polyline || []}
+                    mode="driving"
+                    visible={true}
+                  />
+                )}
+              </MapContainer>
 
       {/* 左上：搜索框（悬浮） */}
       <div style={{
@@ -1083,8 +1296,8 @@ const LogisticsTracking: React.FC = () => {
             style={{ marginBottom: 0 }}
           />
         </Card>
-      </div>
-
+            </div>
+            
       {/* 顶部：统计信息卡片（悬浮，可折叠） */}
       {statsPanelCollapsed ? (
         <div style={{
@@ -1312,7 +1525,7 @@ const LogisticsTracking: React.FC = () => {
       )}
 
       {/* 轨迹回放控制（独立悬浮，在派送任务下方） */}
-      {!leftPanelCollapsed && selectedVehicleId && trackPoints.length > 0 && (
+      {/* {!leftPanelCollapsed && selectedVehicleId && trackPoints.length > 0 && (
         <div style={{
           position: 'absolute',
           left: 12,
@@ -1322,13 +1535,13 @@ const LogisticsTracking: React.FC = () => {
         }}>
           {renderPlaybackControls()}
         </div>
-      )}
+      )} */}
 
       {/* 右侧：配送时间线面板（点击任务后显示） */}
       {selectedTaskTimeline && deliveryNodes[selectedTaskTimeline] && (
         <div style={{
           position: 'absolute',
-          right: 12,
+          left: 350,
           top: statsPanelCollapsed ? 80 : 140,
           bottom: 12,
           zIndex: 2000,
@@ -1399,23 +1612,23 @@ const LogisticsTracking: React.FC = () => {
           }}
         >
           <Space size="large" direction="vertical">
-            <Space>
-              <div style={{ width: '12px', height: '12px', background: '#1890ff', borderRadius: '50%' }}></div>
-              <span style={{ fontSize: '12px' }}>行驶中车辆</span>
-            </Space>
-            <Space>
-              <div style={{ width: '12px', height: '12px', background: '#52c41a', borderRadius: '50%' }}></div>
-              <span style={{ fontSize: '12px' }}>空闲车辆</span>
-            </Space>
-            <Space>
-              <div style={{ width: '2px', height: '12px', background: '#1890ff' }}></div>
-              <span style={{ fontSize: '12px' }}>配送路线</span>
-            </Space>
-            <Space>
-              <div style={{ width: '2px', height: '12px', background: '#722ed1' }}></div>
-              <span style={{ fontSize: '12px' }}>轨迹回放</span>
-            </Space>
-          </Space>
+                <Space>
+                  <div style={{ width: '12px', height: '12px', background: '#1890ff', borderRadius: '50%' }}></div>
+                  <span style={{ fontSize: '12px' }}>行驶中车辆</span>
+                </Space>
+                <Space>
+                  <div style={{ width: '12px', height: '12px', background: '#52c41a', borderRadius: '50%' }}></div>
+                  <span style={{ fontSize: '12px' }}>空闲车辆</span>
+                </Space>
+                <Space>
+                  <div style={{ width: '2px', height: '12px', background: '#1890ff' }}></div>
+                  <span style={{ fontSize: '12px' }}>配送路线</span>
+                </Space>
+                <Space>
+                  <div style={{ width: '2px', height: '12px', background: '#722ed1' }}></div>
+                  <span style={{ fontSize: '12px' }}>轨迹回放</span>
+                </Space>
+              </Space>
         </Card>
       </div>
 
@@ -1486,15 +1699,191 @@ const LogisticsTracking: React.FC = () => {
     </div>
   );
 
+  // 计算两点之间的距离（米）
+  const calculateDistance = useCallback((pos1: MapPosition, pos2: MapPosition): number => {
+    const R = 6371000; // 地球半径（米）
+    const dLat = (pos2.lat - pos1.lat) * Math.PI / 180;
+    const dLng = (pos2.lng - pos1.lng) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(pos1.lat * Math.PI / 180) * Math.cos(pos2.lat * Math.PI / 180) *
+              Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }, []);
+
+  // 检查是否到达目标位置（50米范围内）
+  const checkArrival = useCallback((currentPos: MapPosition, targetPos: MapPosition, threshold: number = 50): boolean => {
+    const distance = calculateDistance(currentPos, targetPos);
+    return distance <= threshold;
+  }, [calculateDistance]);
+
+  // 派送员：导航到快递站
+  const handleNavigateToWarehouse = useCallback((task: DeliveryTask) => {
+    setCourierNavigatingTo('warehouse');
+    setCourierRouteVisible(true);
+    // 切换到地图视图
+    setCourierDetailTask(null);
+    
+    // 设置车辆目标为快递站，并更新车辆状态为行驶中
+    setVehicleTargets(prev => ({
+      ...prev,
+      [task.vehicleId]: task.pickupAddress
+    }));
+    
+    // 更新车辆状态为行驶中，开始移动（使用函数式更新确保获取最新状态）
+    setVehicles(prevVehicles => {
+      const updatedVehicles = prevVehicles.map(v =>
+        v.id === task.vehicleId
+          ? { ...v, status: VehicleStatus.EN_ROUTE, lastUpdate: new Date() }
+          : v
+      );
+      
+      // 找到更新后的车辆位置
+      const courierVehicle = updatedVehicles.find(v => v.id === task.vehicleId);
+      if (courierVehicle) {
+        // 初始化该车辆的实时轨迹
+        setActiveRoutes(prev => ({
+          ...prev,
+          [task.vehicleId]: [courierVehicle.position]
+        }));
+        
+        // 生成简单的路线（从当前位置到快递站）
+        const route = [
+          courierVehicle.position,
+          { lng: (courierVehicle.position.lng + task.pickupAddress.lng) / 2, lat: (courierVehicle.position.lat + task.pickupAddress.lat) / 2 },
+          task.pickupAddress
+        ];
+        setCourierRoutePath(route);
+      }
+      
+      return updatedVehicles;
+    });
+    
+    message.info('已开始导航到快递站，车辆开始移动');
+  }, []);
+
+  // 派送员：导航到收货点
+  const handleNavigateToDelivery = useCallback((task: DeliveryTask) => {
+    setCourierNavigatingTo('delivery');
+    setCourierRouteVisible(true);
+    // 切换到地图视图
+    setCourierDetailTask(null);
+    // 生成简单的路线（从当前位置到收货点）
+    const courierVehicle = vehicles.find(v => v.id === selectedCourierId);
+    if (courierVehicle) {
+      const route = [
+        courierVehicle.position,
+        { lng: (courierVehicle.position.lng + task.deliveryAddress.lng) / 2, lat: (courierVehicle.position.lat + task.deliveryAddress.lat) / 2 },
+        task.deliveryAddress
+      ];
+      setCourierRoutePath(route);
+      message.info('已开始导航到收货点，请查看地图');
+    }
+  }, [vehicles, selectedCourierId]);
+
+  // 派送员：确认取货
+  const handlePickupConfirm = useCallback((task: DeliveryTask) => {
+    // 更新任务状态为运输中
+    handleTaskStatusUpdate(task.id, DeliveryStatus.IN_TRANSIT);
+    
+    // 更新车辆状态为送货中
+    setVehicles(prevVehicles =>
+      prevVehicles.map(v =>
+        v.id === task.vehicleId
+          ? { ...v, status: VehicleStatus.DELIVERING_GOODS, lastUpdate: new Date() }
+          : v
+      )
+    );
+    
+    // 更新车辆目标为收货点（车辆继续移动）
+    setVehicleTargets(prev => ({
+      ...prev,
+      [task.vehicleId]: task.deliveryAddress
+    }));
+    
+    setCourierNavigatingTo(null);
+    setCourierRouteVisible(false);
+    setCourierRoutePath([]);
+    message.success('取货成功！车辆继续前往收货点');
+  }, [handleTaskStatusUpdate]);
+
+  // 派送员：确认送货成功
+  const handleDeliveryConfirm = useCallback((task: DeliveryTask) => {
+    // 更新任务状态为已送达
+    handleTaskStatusUpdate(task.id, DeliveryStatus.DELIVERED);
+    
+    // 清除车辆目标（车辆停止移动）
+    setVehicleTargets(prev => {
+      const newTargets = { ...prev };
+      delete newTargets[task.vehicleId];
+      return newTargets;
+    });
+    
+    setCourierNavigatingTo(null);
+    setCourierRouteVisible(false);
+    setCourierRoutePath([]);
+    message.success('送货成功！任务已完成');
+  }, [handleTaskStatusUpdate]);
+
+  // 实时检测派送员位置，判断是否到达目标并更新车辆状态
+  useEffect(() => {
+    const courierVehicle = vehicles.find(v => v.id === selectedCourierId);
+    if (!courierVehicle) return;
+
+    // 从任务列表中查找当前的任务
+    const courierTasks = deliveryTasks.filter(t => t.vehicleId === selectedCourierId);
+    
+    // 检查是否有已分配的任务到达了快递站（取货中）
+    const assignedTask = courierTasks.find(t => t.status === DeliveryStatus.ASSIGNED);
+    if (assignedTask) {
+      const distance = calculateDistance(courierVehicle.position, assignedTask.pickupAddress);
+      if (distance <= 150 && courierVehicle.status !== VehicleStatus.PICKING_UP) {
+        // 到达快递站，更新状态为取货中
+        setVehicles(prevVehicles =>
+          prevVehicles.map(v =>
+            v.id === selectedCourierId
+              ? { ...v, status: VehicleStatus.PICKING_UP, lastUpdate: new Date() }
+              : v
+          )
+        );
+      }
+    }
+    
+    // 检查是否有运输中的任务到达了收货点（送货中）
+    const transitTask = courierTasks.find(t => t.status === DeliveryStatus.IN_TRANSIT);
+    if (transitTask) {
+      const distance = calculateDistance(courierVehicle.position, transitTask.deliveryAddress);
+      if (distance <= 150 && courierVehicle.status !== VehicleStatus.DELIVERING_GOODS) {
+        // 到达收货点，更新状态为送货中
+        setVehicles(prevVehicles =>
+          prevVehicles.map(v =>
+            v.id === selectedCourierId
+              ? { ...v, status: VehicleStatus.DELIVERING_GOODS, lastUpdate: new Date() }
+              : v
+          )
+        );
+      }
+    }
+  }, [vehicles, selectedCourierId, deliveryTasks, calculateDistance]);
+
   // 派送员视图布局（静态展示当前派送员的任务和地图）
   const renderCourierView = () => {
     const courierVehicle = vehicles.find(v => v.id === selectedCourierId) || vehicles[0];
     const myTasks = deliveryTasks.filter(t => t.vehicleId === courierVehicle?.id);
 
+    // 处理派送员点击任务
+    const handleCourierTaskClick = (task: DeliveryTask) => {
+      setCourierDetailTask(task);
+      // 重置导航状态
+      setCourierNavigatingTo(null);
+      setCourierRouteVisible(false);
+      setCourierRoutePath([]);
+    };
+
     return (
-      <Row gutter={16}>
+      <Row gutter={16} style={{ height: '100%' }}>
         {/* 左侧：当前派送员任务列表 */}
-        <Col span={8}>
+        <Col span={8} style={{ height: '100%' }}>
           <Card
             title={
               <Space>
@@ -1502,12 +1891,13 @@ const LogisticsTracking: React.FC = () => {
                 <Tag color="blue">{courierVehicle?.driver || '派送员'}</Tag>
               </Space>
             }
-            style={{ marginBottom: 16 }}
+            style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+            bodyStyle={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}
           >
             <div style={{ marginBottom: 8, fontSize: 12, color: '#666' }}>
               今日任务：{myTasks.length} 单，运输中 {myTasks.filter(t => t.status === DeliveryStatus.IN_TRANSIT).length} 单
             </div>
-            <div style={{ maxHeight: 520, overflow: 'auto' }}>
+            <div style={{ flex: 1, overflow: 'auto' }}>
               {myTasks.length === 0 ? (
                 <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>
                   暂无分配给该派送员的任务
@@ -1517,7 +1907,8 @@ const LogisticsTracking: React.FC = () => {
                   <Card
                     key={task.id}
                     size="small"
-                    style={{ marginBottom: 8 }}
+                    style={{ marginBottom: 8, cursor: 'pointer' }}
+                    onClick={() => handleCourierTaskClick(task)}
                   >
                     <Space direction="vertical" size={4}>
                       <Space>
@@ -1539,62 +1930,330 @@ const LogisticsTracking: React.FC = () => {
             </div>
           </Card>
         </Col>
+      
+        {/* 右侧：派送员工作台 */}
+        <Col span={16} style={{ height: '100%' }}>
+          {(() => {
+            return courierDetailTask ? (
+            // 任务详情面板
+            <Card
+              title={
+                <Space>
+            <Button 
+              type="primary"
+                    size="small"
+                    onClick={() => setCourierDetailTask(null)}
+            >
+                    返回地图
+            </Button>
+                  <span>任务详情</span>
+                </Space>
+              }
+              style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+              bodyStyle={{ flex: 1, overflow: 'auto', padding: '16px' }}
+      >
+              {/* 订单详情 */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 16, color: '#1890ff' }}>
+                  订单详情
+                </div>
+            <Row gutter={16}>
+              <Col span={12}>
+                    <div style={{ marginBottom: 12 }}>
+                      <span style={{ color: '#999', marginRight: 8 }}>收件人：</span>
+                      <strong>{courierDetailTask.customerName}</strong>
+                    </div>
+                    <div style={{ marginBottom: 12 }}>
+                      <span style={{ color: '#999', marginRight: 8 }}>联系电话：</span>
+                      {courierDetailTask.customerPhone}
+                    </div>
+                    <div style={{ marginBottom: 12 }}>
+                      <span style={{ color: '#999', marginRight: 8 }}>收件地址：</span>
+                      <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
+                        ({courierDetailTask.deliveryAddress.lng.toFixed(4)}, {courierDetailTask.deliveryAddress.lat.toFixed(4)})
+                      </div>
+                    </div>
+              </Col>
+              <Col span={12}>
+                    <div style={{ marginBottom: 12 }}>
+                      <span style={{ color: '#999', marginRight: 8 }}>订单号：</span>
+                      {courierDetailTask.orderId}
+                    </div>
+                    <div style={{ marginBottom: 12 }}>
+                      <span style={{ color: '#999', marginRight: 8 }}>物品清单：</span>
+                      <ul style={{ margin: '4px 0 0 0', paddingLeft: 16, fontSize: 12 }}>
+                        {courierDetailTask.items.map((item, idx) => (
+                          <li key={idx}>{item}</li>
+                    ))}
+                  </ul>
+                    </div>
+                    {courierDetailTask.notes && (
+                      <div style={{ marginBottom: 12 }}>
+                        <span style={{ color: '#999', marginRight: 8 }}>备注：</span>
+                        <Tag color="orange">{courierDetailTask.notes}</Tag>
+                      </div>
+                  )}
+              </Col>
+            </Row>
+              </div>
 
-        {/* 右侧：派送员地图视图 */}
-        <Col span={16}>
-          <Card
-            title={
-              <Space>
-                <span>派送员地图视图</span>
-                {courierVehicle && (
-                  <span style={{ fontSize: 12, color: '#666' }}>
-                    当前车辆：{courierVehicle.licensePlate}（{courierVehicle.driver}）
-                  </span>
+              <Divider />
+
+              {/* 操作按钮区域 */}
+              <div style={{ marginTop: 24 }}>
+                <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 16, color: '#1890ff' }}>
+                  操作
+                </div>
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                  {/* 根据任务状态显示不同的操作按钮 */}
+                  {courierDetailTask.status === DeliveryStatus.ASSIGNED && (
+                    <Button
+                      type="primary"
+                      size="large"
+                      block
+                      icon={<EnvironmentOutlined />}
+                      onClick={() => handleNavigateToWarehouse(courierDetailTask)}
+                      disabled={courierNavigatingTo === 'warehouse'}
+                    >
+                      {courierNavigatingTo === 'warehouse' ? '正在导航到快递站...' : '导航到快递站'}
+                    </Button>
+                  )}
+                  
+                  {courierDetailTask.status === DeliveryStatus.IN_TRANSIT && (
+                    <Button
+                      type="primary"
+                      size="large"
+                      block
+                      icon={<EnvironmentOutlined />}
+                      onClick={() => handleNavigateToDelivery(courierDetailTask)}
+                      disabled={courierNavigatingTo === 'delivery'}
+                    >
+                      {courierNavigatingTo === 'delivery' ? '正在导航到收货点...' : '导航到收货点'}
+                    </Button>
+                  )}
+
+                  {courierDetailTask.status === DeliveryStatus.DELIVERED && (
+                    <div style={{ textAlign: 'center', padding: 16, background: '#f6ffed', borderRadius: 4 }}>
+                      <CheckCircleOutlined style={{ fontSize: 24, color: '#52c41a', marginBottom: 8 }} />
+                      <div style={{ color: '#52c41a', fontWeight: 'bold' }}>任务已完成</div>
+                    </div>
                 )}
-              </Space>
-            }
-            style={{ height: '700px' }}
-          >
-            <div style={{ position: 'relative', width: '100%', height: '600px' }}>
-              <MapContainer
-                center={courierVehicle?.position || mapCenter}
-                zoom={15}
-                controls={{ scale: true, toolBar: true, mapType: false }}
-                style={{ width: '100%', height: '100%' }}
-              >
-                {courierVehicle && (
+                </Space>
+              </div>
+              </Card>
+          ) : (
+            // 地图视图
+            <Card
+              title={
+                <Space>
+                  <span>派送员地图视图</span>
+                  {courierVehicle && (
+                    <span style={{ fontSize: 12, color: '#666' }}>
+                      当前车辆：{courierVehicle.licensePlate}（{courierVehicle.driver}）
+                    </span>
+                  )}
+                </Space>
+              }
+              style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+              bodyStyle={{ flex: 1, overflow: 'hidden', padding: 0, height: '100%' }}
+            >
+              <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 600 }}>
+                <MapContainer
+                  center={courierVehicle?.position || mapCenter}
+                  zoom={15}
+                  controls={{ scale: true, toolBar: true, mapType: false }}
+                  style={{ width: '100%', height: '100%' }}
+                  onMapReady={handleMapReady}
+                >
+                  {courierVehicle && (
+                    <MarkerLayer
+                      markers={[
+                        {
+                          id: courierVehicle.id,
+                          type: 'vehicle' as const,
+                          title: `${courierVehicle.licensePlate} - ${courierVehicle.driver}`,
+                          position: courierVehicle.position,
+                          icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png',
+                          createdAt: courierVehicle.lastUpdate,
+                          updatedAt: courierVehicle.lastUpdate,
+                          data: {},
+                        },
+                      ]}
+                    />
+                  )}
+                  {/* 快递站标记 */}
                   <MarkerLayer
-                    markers={[
-                      {
-                        id: courierVehicle.id,
-                        type: 'vehicle' as const,
-                        title: `${courierVehicle.licensePlate} - ${courierVehicle.driver}`,
-                        position: courierVehicle.position,
-                        icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png',
-                        createdAt: courierVehicle.lastUpdate,
-                        updatedAt: courierVehicle.lastUpdate,
-                        data: {},
-                      },
-                    ]}
+                    markers={[{
+                      id: 'warehouse-courier',
+                      type: 'warehouse' as const,
+                      title: '快递站',
+                      position: warehousePosition,
+                      icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_g.png',
+                      createdAt: new Date(),
+                      updatedAt: new Date(),
+                      data: { isWarehouse: true }
+                    }]}
                   />
-                )}
-                {myTasks.length > 0 && (
-                  <MarkerLayer
-                    markers={myTasks.map((t) => ({
-                      id: t.id,
+                  
+                  {/* 任务标记：取货地址和收货地址 */}
+                  {myTasks.map((task) => {
+                    const markers: any[] = [];
+                    // 如果任务状态是已分配，显示取货地址
+                    if (task.status === DeliveryStatus.ASSIGNED || task.status === DeliveryStatus.IN_TRANSIT) {
+                      markers.push({
+                        id: `pickup-${task.id}`,
+                        type: 'store' as const,
+                        title: `取货点：${task.orderId}`,
+                        position: task.pickupAddress,
+                        icon: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+                          <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="20" cy="20" r="18" fill="#fa8c16" stroke="white" stroke-width="2"/>
+                            <rect x="12" y="14" width="16" height="12" rx="1" fill="white"/>
+                            <path d="M12 18 L20 14 L28 18" stroke="#fa8c16" stroke-width="2" fill="none"/>
+                            <line x1="16" y1="20" x2="16" y2="26" stroke="#fa8c16" stroke-width="1.5"/>
+                            <line x1="24" y1="20" x2="24" y2="26" stroke="#fa8c16" stroke-width="1.5"/>
+                          </svg>
+                        `)}`,
+                        createdAt: task.estimatedArrival,
+                        updatedAt: task.estimatedArrival,
+                        data: { isPickup: true }
+                      });
+                    }
+                    // 显示收货地址
+                    markers.push({
+                      id: `delivery-${task.id}`,
                       type: 'store' as const,
-                      title: `收件人：${t.customerName}`,
-                      position: t.deliveryAddress,
-                      icon: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
-                      createdAt: t.estimatedArrival,
-                      updatedAt: t.estimatedArrival,
-                      data: {},
-                    }))}
-                  />
-                )}
-              </MapContainer>
-            </div>
-          </Card>
+                      title: `收件人：${task.customerName}`,
+                      position: task.deliveryAddress,
+                      icon: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+                        <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                          <circle cx="20" cy="20" r="18" fill="#52c41a" stroke="white" stroke-width="2"/>
+                          <circle cx="20" cy="16" r="5" fill="white"/>
+                          <path d="M12 28 Q12 24 20 24 Q28 24 28 28" fill="white"/>
+                          <path d="M18 30 L20 32 L22 30" stroke="#52c41a" stroke-width="1.5" fill="none"/>
+                        </svg>
+                      `)}`,
+                      createdAt: task.estimatedArrival,
+                      updatedAt: task.estimatedArrival,
+                      data: { isDelivery: true }
+                    });
+                    return (
+                      <MarkerLayer key={task.id} markers={markers} />
+                    );
+                  })}
+                  
+                  {/* 导航路线 */}
+                  {courierRouteVisible && courierRoutePath.length > 0 && (
+                    <RouteLayer
+                      polyline={courierRoutePath}
+                      mode="driving"
+                      visible={true}
+                    />
+                  )}
+                </MapContainer>
+                
+                {/* 浮动操作按钮 - 当到达目标位置时显示 */}
+                {(() => {
+                  const courierVehicle = vehicles.find(v => v.id === selectedCourierId);
+                  if (!courierVehicle) return null;
+                  
+                  // 查找可以操作的任务
+                  let currentTask: DeliveryTask | null = null;
+                  let targetPos: MapPosition | null = null;
+                  let buttonType: 'pickup' | 'delivery' | null = null;
+                  
+                  // 如果正在导航，优先使用导航状态
+                  if (courierNavigatingTo) {
+                    currentTask = myTasks.find(t => 
+                      (courierNavigatingTo === 'warehouse' && t.status === DeliveryStatus.ASSIGNED) ||
+                      (courierNavigatingTo === 'delivery' && t.status === DeliveryStatus.IN_TRANSIT)
+                    ) || null;
+                    
+                    if (currentTask) {
+                      targetPos = courierNavigatingTo === 'warehouse' 
+                        ? currentTask.pickupAddress 
+                        : currentTask.deliveryAddress;
+                      buttonType = courierNavigatingTo === 'warehouse' ? 'pickup' : 'delivery';
+                    }
+                  } else {
+                    // 如果没有导航状态，检查是否有运输中的任务到达了收货点
+                    const transitTask = myTasks.find(t => t.status === DeliveryStatus.IN_TRANSIT);
+                    if (transitTask) {
+                      const distance = calculateDistance(courierVehicle.position, transitTask.deliveryAddress);
+                      const hasArrivedAtDelivery = distance <= 150; // 增加到150米，更符合实际场景
+                      if (hasArrivedAtDelivery) {
+                        currentTask = transitTask;
+                        targetPos = transitTask.deliveryAddress;
+                        buttonType = 'delivery';
+                      }
+                    }
+                    
+                    // 如果没有运输中的任务，检查是否有已分配的任务到达了取货点
+                    if (!currentTask) {
+                      const assignedTask = myTasks.find(t => t.status === DeliveryStatus.ASSIGNED);
+                      if (assignedTask) {
+                        const distance = calculateDistance(courierVehicle.position, assignedTask.pickupAddress);
+                        const hasArrivedAtPickup = distance <= 150; // 增加到150米
+                        if (hasArrivedAtPickup) {
+                          currentTask = assignedTask;
+                          targetPos = assignedTask.pickupAddress;
+                          buttonType = 'pickup';
+                        }
+                      }
+                    }
+                  }
+                  
+                  if (!currentTask || !targetPos || !buttonType) return null;
+                  
+                  const distance = calculateDistance(courierVehicle.position, targetPos);
+                  const hasArrived = distance <= 150; // 增加到150米
+                  
+                  if (!hasArrived) return null;
+                  
+                  return (
+                    <div style={{
+                      position: 'absolute',
+                      bottom: 20,
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      zIndex: 1000,
+                    }}>
+                      <Card
+                        style={{
+                          borderRadius: 8,
+                          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                          background: '#fff',
+                        }}
+                      >
+                        {buttonType === 'pickup' ? (
+                          <Button
+                            type="primary"
+                            size="large"
+                            icon={<CheckCircleOutlined />}
+                            onClick={() => handlePickupConfirm(currentTask!)}
+                            style={{ backgroundColor: '#52c41a', borderColor: '#52c41a', minWidth: 200 }}
+                          >
+                            确认取货
+                          </Button>
+                        ) : (
+                          <Button
+                            type="primary"
+                            size="large"
+                            icon={<CheckCircleOutlined />}
+                            onClick={() => handleDeliveryConfirm(currentTask!)}
+                            style={{ backgroundColor: '#52c41a', borderColor: '#52c41a', minWidth: 200 }}
+                          >
+                            确认送货成功
+                          </Button>
+                        )}
+                      </Card>
+          </div>
+                  );
+                })()}
+              </div>
+            </Card>
+          );
+          })()}
         </Col>
       </Row>
     );
@@ -1650,91 +2309,6 @@ const LogisticsTracking: React.FC = () => {
 
       {userRole === 'admin' ? renderAdminView() : renderCourierView()}
 
-      {/* 任务详情弹窗 */}
-      <Modal
-        title="配送任务详情"
-        open={showTaskModal}
-        onCancel={() => setShowTaskModal(false)}
-        footer={[
-          <Button key="cancel" onClick={() => setShowTaskModal(false)}>
-            关闭
-          </Button>,
-          selectedTask && selectedTask.status !== DeliveryStatus.DELIVERED && (
-            <Button 
-              key="complete" 
-              type="primary"
-              onClick={() => {
-                handleTaskStatusUpdate(selectedTask.id, DeliveryStatus.DELIVERED);
-                setShowTaskModal(false);
-              }}
-            >
-              标记为已送达
-            </Button>
-          )
-        ]}
-        width={600}
-      >
-        {selectedTask && (
-          <div>
-            <Row gutter={16}>
-              <Col span={12}>
-                <Card size="small" title="订单信息">
-                  <p><strong>订单号：</strong>{selectedTask.orderId}</p>
-                  <p><strong>客户：</strong>{selectedTask.customerName}</p>
-                  <p><strong>电话：</strong>{selectedTask.customerPhone}</p>
-                  <p><strong>状态：</strong>
-                    <Tag color={getDeliveryStatusInfo(selectedTask.status).color}>
-                      {getDeliveryStatusInfo(selectedTask.status).text}
-                    </Tag>
-                  </p>
-                  <p><strong>预计送达：</strong>{selectedTask.estimatedArrival.toLocaleString()}</p>
-                </Card>
-              </Col>
-              <Col span={12}>
-                <Card size="small" title="配送信息">
-                  <p><strong>配送车辆：</strong>
-                    {vehicles.find(v => v.id === selectedTask.vehicleId)?.licensePlate || '未分配'}
-                  </p>
-                  <p><strong>配送司机：</strong>
-                    {vehicles.find(v => v.id === selectedTask.vehicleId)?.driver || '未分配'}
-                  </p>
-                  <p><strong>配送物品：</strong></p>
-                  <ul>
-                    {selectedTask.items.map((item, index) => (
-                      <li key={index}>{item}</li>
-                    ))}
-                  </ul>
-                  {selectedTask.notes && (
-                    <p><strong>备注：</strong>{selectedTask.notes}</p>
-                  )}
-                </Card>
-              </Col>
-            </Row>
-            
-            {/* 配送路线规划 */}
-            {selectedTask && (
-              <Card size="small" title="配送路线规划" style={{ marginTop: 16 }}>
-                <RoutePlanningForm
-                  onPlanRoute={(params) => {
-                    // 使用任务的取货地址作为起点，送货地址作为终点
-                    const taskRouteParams = {
-                      ...params,
-                      origin: selectedTask.pickupAddress,
-                      destination: selectedTask.deliveryAddress
-                    };
-                    handlePlanRoute(taskRouteParams);
-                  }}
-                  planning={false}
-                />
-                
-                {routeResult && (
-                  <RouteDetailsPanel routeData={routeResult.data} />
-                )}
-              </Card>
-            )}
-          </div>
-        )}
-      </Modal>
     </div>
   );
 };
