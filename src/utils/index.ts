@@ -13,8 +13,6 @@ export function calculateDistance(pos1: MapPosition, pos2: MapPosition): number 
   const dLat = toRadians(pos2.lat - pos1.lat);
   const dLng = toRadians(pos2.lng - pos1.lng);
 
-  console.log('111')
-
   const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRadians(pos1.lat)) * Math.cos(toRadians(pos2.lat)) *
     Math.sin(dLng / 2) * Math.sin(dLng / 2);
