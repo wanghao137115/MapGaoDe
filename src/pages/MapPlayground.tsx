@@ -80,15 +80,19 @@ const MapPlayground: React.FC = () => {
     };
   }, []);
 
-  const {
-    center: storeCenter,
-    zoom,
-    mapType,
-    setCenter,
-    setZoom,
-    setMapType,
-  } = useMapStore();
-  const { markers, addMarker, updateMarker, removeMarker } = useMarkersStore();
+  // 按字段订阅 map store，只有对应字段变化时才重新渲染
+  const storeCenter = useMapStore(s => s.center);
+  const zoom = useMapStore(s => s.zoom);
+  const mapType = useMapStore(s => s.mapType);
+  const setCenter = useMapStore(s => s.setCenter);
+  const setZoom = useMapStore(s => s.setZoom);
+  const setMapType = useMapStore(s => s.setMapType);
+  
+  // 按字段订阅 markers store，只有对应字段变化时才重新渲染
+  const markers = useMarkersStore(s => s.markers);
+  const addMarker = useMarkersStore(s => s.addMarker);
+  const updateMarker = useMarkersStore(s => s.updateMarker);
+  const removeMarker = useMarkersStore(s => s.removeMarker);
   // 添加选中标记状态
   const [selectedMarker, setSelectedMarker] = useState<Marker | null>(null);
   // 新增状态：信息弹窗可见性
