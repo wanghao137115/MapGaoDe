@@ -101,6 +101,14 @@ interface DeliveryTask {
   actualArrival?: Date;    // 实际送达时间
   items: string[];         // 配送物品列表
   notes?: string;          // 备注信息
+  // 新增：真实轨迹数据
+  routeHistory?: {         // 配送路线历史
+    position: MapPosition;  // 路线点位置
+    timestamp: Date;       // 经过时间
+    speed: number;          // 当时速度
+  }[];
+  startTime?: Date;        // 开始配送时间
+  endTime?: Date;          // 完成配送时间
 }
 
 // 轨迹点接口定义
@@ -572,163 +580,240 @@ const LogisticsTracking: React.FC = () => {
     }
   };
 
+  // 使用 ref 存储轨迹点，避免频繁更新导致性能问题
+  const trackPointsRef = useRef<{ vehicleId: string, points: { position: MapPosition, timestamp: Date, speed: number }[] }[]>([]);
+
   // 模拟实时位置更新 - 实现车辆轨迹移动
   const updateVehiclePositions = useCallback(() => {
     setVehicles(prevVehicles =>
       prevVehicles.map(vehicle => {
-        if (vehicle.status === VehicleStatus.EN_ROUTE) {
-          // 获取车辆当前目标位置（可能是快递站或收货点）
-          const targetPos = vehicleTargets[vehicle.id];
-          if (!targetPos) {
-            // 如果没有设置目标，尝试从任务中获取
-          const task = deliveryTasks.find(t => t.vehicleId === vehicle.id && t.status === DeliveryStatus.IN_TRANSIT);
-            if (!task) return vehicle;
-            // 使用收货点作为目标
-            const target = task.deliveryAddress;
-            // 计算车辆当前位置到目的地的距离
-            const distance = Math.sqrt(
-              Math.pow(target.lng - vehicle.position.lng, 2) +
-              Math.pow(target.lat - vehicle.position.lat, 2)
-            );
-
-            if (distance < 0.001) {
-              // 到达目的地，更新任务状态为已送达
-              setTimeout(() => {
-                setDeliveryTasks(prevTasks =>
-                  prevTasks.map(t =>
-                    t.id === task.id ? { ...t, status: DeliveryStatus.DELIVERED } : t
-                  )
-                );
-                setVehicles(prevVehicles =>
-                  prevVehicles.map(v =>
-                    v.id === task.vehicleId
-                      ? { ...v, status: VehicleStatus.IDLE, lastUpdate: new Date() }
-                      : v
-                  )
-                );
-                setActiveRoutes(prev => {
-                  const newRoutes = { ...prev };
-                  delete newRoutes[task.vehicleId];
-                  return newRoutes;
-                });
-                setVehicleTargets(prev => {
-                  const newTargets = { ...prev };
-                  delete newTargets[task.vehicleId];
-                  return newTargets;
-                });
-                const updatedTask = { ...task, status: DeliveryStatus.DELIVERED };
-                const nodes = generateDeliveryNodes(updatedTask);
-                setDeliveryNodes(prev => ({
-                  ...prev,
-                  [task.id]: nodes
-                }));
-                message.success('任务已完成');
-              }, 1000);
-              return vehicle;
-            } else {
-              // 向目的地移动
-              const baseSpeed = task.priority === DeliveryPriority.URGENT ? 0.001 : 0.0005;
-              const directionLng = (target.lng - vehicle.position.lng) / distance;
-              const directionLat = (target.lat - vehicle.position.lat) / distance;
-              const newLng = vehicle.position.lng + directionLng * baseSpeed;
-              const newLat = vehicle.position.lat + directionLat * baseSpeed;
-              const newSpeed = Math.round(distance * 1000);
-              const updatedVehicle = {
-                ...vehicle,
-                position: { lng: newLng, lat: newLat },
-                speed: newSpeed,
-                lastUpdate: new Date(),
-                batteryLevel: Math.max(0, vehicle.batteryLevel - Math.random() * 0.05)
-              };
-              setActiveRoutes(prev => ({
-                ...prev,
-                [vehicle.id]: [...(prev[vehicle.id] || []), updatedVehicle.position]
-              }));
-              return updatedVehicle;
-            }
-          } else {
-            // 使用设置的目标位置
-            // 计算车辆当前位置到目的地的距离
-            const distance = Math.sqrt(
-              Math.pow(targetPos.lng - vehicle.position.lng, 2) +
-              Math.pow(targetPos.lat - vehicle.position.lat, 2)
-            );
-            
-            // 找到该车辆的任务（用于获取优先级等信息）
-            const task = deliveryTasks.find(t => t.vehicleId === vehicle.id);
-            const priority = task?.priority || DeliveryPriority.NORMAL;
-            
-            if (distance < 0.001) {
-              // 到达目标位置
-              // 如果目标是快递站，等待派送员确认取货
-              // 如果目标是收货点，等待派送员确认送货
-              return vehicle;
-            } else {
-              // 向目标位置移动
-              const baseSpeed = priority === DeliveryPriority.URGENT ? 0.001 : 0.0005;
-              const directionLng = (targetPos.lng - vehicle.position.lng) / distance;
-              const directionLat = (targetPos.lat - vehicle.position.lat) / distance;
-              const newLng = vehicle.position.lng + directionLng * baseSpeed;
-              const newLat = vehicle.position.lat + directionLat * baseSpeed;
-              const newSpeed = Math.round(distance * 1000);
-
-              const updatedVehicle = {
-                ...vehicle,
-                position: { lng: newLng, lat: newLat },
-                speed: newSpeed,
-                lastUpdate: new Date(),
-                batteryLevel: Math.max(0, vehicle.batteryLevel - Math.random() * 0.05)
-              };
-
-              // 为正在行驶的车辆记录实时轨迹
-              setActiveRoutes(prev => {
-                const newRoutes = {
-                ...prev,
-                [vehicle.id]: [...(prev[vehicle.id] || []), updatedVehicle.position]
-                };
-                return newRoutes;
-              });
-
-              return updatedVehicle;
-            }
-          }
+        // 找到该车辆的当前任务（只处理 IN_TRANSIT 状态）
+        // ASSIGNED 状态的车辆不移动，等待派送员点击"导航到快递站"
+        const activeTask = deliveryTasks.find(t => 
+          t.vehicleId === vehicle.id && 
+          t.status === DeliveryStatus.IN_TRANSIT
+        );
+        
+        // 如果没有活动任务或任务不是 IN_TRANSIT 状态，车辆不移动
+        if (!activeTask) {
+          return vehicle;
         }
-        return vehicle;
+        
+        // 获取该车辆的任务开始时间
+        const taskStartTime = trackPointsRef.current.find(p => p.vehicleId === vehicle.id)?.points[0]?.timestamp;
+        
+        // 只有设置了 vehicleTargets 的车辆才移动
+        const targetPos = vehicleTargets[vehicle.id];
+        if (!targetPos) {
+          // 没有设置导航目标，车辆保持静止
+          return vehicle;
+        }
+        
+        // 计算车辆当前位置到目的地的距离
+        const distance = Math.sqrt(
+          Math.pow(targetPos.lng - vehicle.position.lng, 2) +
+          Math.pow(targetPos.lat - vehicle.position.lat, 2)
+        );
+
+        if (distance < 0.001) {
+          // 到达目的地，更新任务状态为已送达
+          setTimeout(() => {
+            // 获取该车辆的所有轨迹点
+            const vehicleTrackData = trackPointsRef.current.find(p => p.vehicleId === vehicle.id);
+            const routeHistory = vehicleTrackData?.points.map(p => ({
+              position: p.position,
+              timestamp: p.timestamp,
+              speed: p.speed
+            })) || [];
+            
+            // 计算开始和结束时间
+            const startTime = vehicleTrackData?.points[0]?.timestamp || new Date();
+            const endTime = new Date();
+            
+            setDeliveryTasks(prevTasks =>
+              prevTasks.map(t =>
+                t.id === activeTask.id 
+                  ? { 
+                      ...t, 
+                      status: DeliveryStatus.DELIVERED,
+                      routeHistory,        // 保存轨迹历史
+                      startTime,          // 保存开始时间
+                      endTime             // 保存结束时间
+                    } 
+                  : t
+              )
+            );
+            
+            setVehicles(prevVehicles =>
+              prevVehicles.map(v =>
+                v.id === activeTask.vehicleId
+                  ? { ...v, status: VehicleStatus.IDLE, lastUpdate: new Date() }
+                  : v
+              )
+            );
+            setActiveRoutes(prev => {
+              const newRoutes = { ...prev };
+              delete newRoutes[activeTask.vehicleId];
+              return newRoutes;
+            });
+            setVehicleTargets(prev => {
+              const newTargets = { ...prev };
+              delete newTargets[activeTask.vehicleId];
+              return newTargets;
+            });
+            
+            // 清除该车辆的轨迹记录
+            trackPointsRef.current = trackPointsRef.current.filter(p => p.vehicleId !== vehicle.id);
+            
+            message.success(`任务 ${activeTask.orderId} 已送达`);
+          }, 1000);
+          return vehicle;
+        } else {
+          // 向目的地移动
+          const baseSpeed = activeTask.priority === DeliveryPriority.URGENT ? 0.001 : 0.0005;
+          const directionLng = (targetPos.lng - vehicle.position.lng) / distance;
+          const directionLat = (targetPos.lat - vehicle.position.lat) / distance;
+          const newLng = vehicle.position.lng + directionLng * baseSpeed;
+          const newLat = vehicle.position.lat + directionLat * baseSpeed;
+          const newSpeed = Math.round(distance * 1000);
+          
+          const updatedVehicle = {
+            ...vehicle,
+            position: { lng: newLng, lat: newLat },
+            speed: newSpeed,
+            lastUpdate: new Date(),
+            batteryLevel: Math.max(0, vehicle.batteryLevel - Math.random() * 0.05)
+          };
+          
+          // 记录轨迹点（带时间戳）
+          const trackPoint = {
+            position: updatedVehicle.position,
+            timestamp: new Date(),
+            speed: newSpeed
+          };
+          
+          let vehicleTrackData = trackPointsRef.current.find(p => p.vehicleId === vehicle.id);
+          if (!vehicleTrackData) {
+            vehicleTrackData = { vehicleId: vehicle.id, points: [] };
+            trackPointsRef.current.push(vehicleTrackData);
+          }
+          vehicleTrackData.points.push(trackPoint);
+          
+          setActiveRoutes(prev => ({
+            ...prev,
+            [vehicle.id]: [...(prev[vehicle.id] || []), updatedVehicle.position]
+          }));
+          
+          return updatedVehicle;
+        }
       })
     );
-  }, [deliveryTasks, handleTaskStatusUpdate, selectedVehicleId, vehicleTargets, generateDeliveryNodes]);
+  }, [deliveryTasks, vehicleTargets]);
 
 
 
-  // 处理车辆选择
+  // 处理车辆选择 - 加载该师傅今天的真实配送轨迹
   const handleVehicleSelect = useCallback((vehicleId: string) => {
     setSelectedVehicleId(vehicleId);
     setCurrentTrackIndex(0);
     setIsPlaying(false);
     
-    // 模拟加载该车辆的历史轨迹数据
-    const mockTrackPoints: TrackPoint[] = [];
-    const basePosition = vehicles.find(v => v.id === vehicleId)?.position || { lng: 116.3974, lat: 39.9093 };
+    const vehicle = vehicles.find(v => v.id === vehicleId);
+    if (!vehicle) return;
     
-    // 生成过去2小时的轨迹数据
-    for (let i = 120; i >= 0; i--) {
-      const timestamp = new Date(Date.now() - i * 60000); // 每分钟一个点
-      const offsetLng = (Math.random() - 0.5) * 0.01;
-      const offsetLat = (Math.random() - 0.5) * 0.01;
-      
-      mockTrackPoints.push({
-        position: {
-          lng: basePosition.lng + offsetLng,
-          lat: basePosition.lat + offsetLat
-        },
-        timestamp,
-        speed: Math.floor(Math.random() * 60),
-        status: VehicleStatus.EN_ROUTE
-      });
+    // 获取该师傅今天所有已完成的派送任务
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const todayTasks = deliveryTasks.filter(task => {
+      const isSameVehicle = task.vehicleId === vehicleId;
+      const isCompleted = task.status === DeliveryStatus.DELIVERED;
+      const taskDate = task.endTime || task.actualArrival;
+      const isToday = taskDate && new Date(taskDate) >= today;
+      return isSameVehicle && isCompleted && isToday;
+    });
+    
+    // 按配送时间排序
+    const sortedTasks = [...todayTasks].sort((a, b) => {
+      const timeA = a.endTime || a.actualArrival || new Date(0);
+      const timeB = b.endTime || b.actualArrival || new Date(0);
+      return timeA.getTime() - timeB.getTime();
+    });
+    
+    if (sortedTasks.length === 0) {
+      message.info('该师傅今天还没有完成任何配送任务');
+      setTrackPoints([]);
+      return;
     }
     
-    setTrackPoints(mockTrackPoints);
-  }, [vehicles, activeRoutes]);
+    // 从任务中构建真实轨迹：从快递站出发 -> 各配送点
+    const realTrackPoints: TrackPoint[] = [];
+    
+    sortedTasks.forEach((task, taskIndex) => {
+      // 添加从快递站到配送点的轨迹
+      if (task.routeHistory && task.routeHistory.length > 0) {
+        // 使用任务记录的真实轨迹点
+        task.routeHistory.forEach(point => {
+          realTrackPoints.push({
+            position: point.position,
+            timestamp: point.timestamp,
+            speed: point.speed,
+            status: VehicleStatus.EN_ROUTE
+          });
+        });
+      } else {
+        // 如果没有记录轨迹，生成模拟的路线点
+        // 从快递站到配送点
+        const startPos = task.pickupAddress;
+        const endPos = task.deliveryAddress;
+        const startTime = task.startTime || task.estimatedArrival;
+        const endTime = task.endTime || task.actualArrival || new Date();
+        
+        // 生成20个路线点
+        const pointCount = 20;
+        for (let i = 0; i <= pointCount; i++) {
+          const ratio = i / pointCount;
+          const lng = startPos.lng + (endPos.lng - startPos.lng) * ratio;
+          const lat = startPos.lat + (endPos.lat - startPos.lat) * ratio;
+          
+          // 计算时间
+          const startMs = startTime.getTime();
+          const endMs = endTime.getTime();
+          const timestamp = new Date(startMs + (endMs - startMs) * ratio);
+          
+          realTrackPoints.push({
+            position: { lng, lat },
+            timestamp,
+            speed: 30 + Math.random() * 20, // 30-50km/h
+            status: VehicleStatus.EN_ROUTE
+          });
+        }
+      }
+    });
+    
+    if (realTrackPoints.length === 0) {
+      message.info('该师傅今天没有可回放的轨迹数据');
+      setTrackPoints([]);
+      return;
+    }
+    
+    // 计算总时长
+    const totalDuration = (() => {
+      const firstTime = realTrackPoints[0]?.timestamp;
+      const lastTime = realTrackPoints[realTrackPoints.length - 1]?.timestamp;
+      if (firstTime && lastTime) {
+        return Math.round((lastTime.getTime() - firstTime.getTime()) / 60000); // 分钟
+      }
+      return 0;
+    })();
+    
+    message.info(
+      `已加载 ${vehicle.licensePlate} 今天的配送轨迹，共 ${sortedTasks.length} 单，总时长约 ${totalDuration} 分钟，${realTrackPoints.length} 个轨迹点`,
+      3  // 显示3秒
+    );
+    
+    setTrackPoints(realTrackPoints);
+  }, [vehicles, deliveryTasks]);
 
   // 处理轨迹播放控制
   const handlePlaybackToggle = useCallback(() => {
@@ -1005,9 +1090,51 @@ const LogisticsTracking: React.FC = () => {
     
     const currentPoint = trackPoints[currentTrackIndex];
     
+    // 计算统计信息
+    const firstTime = trackPoints[0]?.timestamp;
+    const lastTime = trackPoints[trackPoints.length - 1]?.timestamp;
+    const totalDuration = firstTime && lastTime 
+      ? Math.round((lastTime.getTime() - firstTime.getTime()) / 60000) 
+      : 0;
+    const totalDistance = (() => {
+      let dist = 0;
+      for (let i = 1; i < trackPoints.length; i++) {
+        const prev = trackPoints[i - 1].position;
+        const curr = trackPoints[i].position;
+        const dx = (curr.lng - prev.lng) * 111000 * Math.cos(prev.lat * Math.PI / 180);
+        const dy = (curr.lat - prev.lat) * 111000;
+        dist += Math.sqrt(dx * dx + dy * dy);
+      }
+      return (dist / 1000).toFixed(1); // 转换为公里
+    })();
+    
     return (
-      <Card title="轨迹回放控制" size="small" style={{ marginTop: 16 }}>
+      <Card title="轨迹回放" size="small" style={{ marginTop: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
+          {/* 统计信息 */}
+          <Row gutter={16}>
+            <Col span={8}>
+              <Statistic title="配送单数" value={(() => {
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                return deliveryTasks.filter(t => 
+                  t.vehicleId === selectedVehicleId && 
+                  t.status === DeliveryStatus.DELIVERED &&
+                  ((t.endTime && new Date(t.endTime) >= today) || (t.actualArrival && new Date(t.actualArrival) >= today))
+                ).length;
+              })()} suffix="单" />
+            </Col>
+            <Col span={8}>
+              <Statistic title="总时长" value={totalDuration} suffix="分钟" />
+            </Col>
+            <Col span={8}>
+              <Statistic title="总里程" value={totalDistance} suffix="km" />
+            </Col>
+          </Row>
+          
+          <Divider style={{ margin: '12px 0' }} />
+          
+          {/* 播放控制 */}
           <Row align="middle" gutter={16}>
             <Col>
               <Button 
@@ -1019,7 +1146,7 @@ const LogisticsTracking: React.FC = () => {
               </Button>
             </Col>
             <Col>
-              <span>播放速度：</span>
+              <span>速度：</span>
               <Select 
                 value={playbackSpeed} 
                 onChange={handleSpeedChange}
@@ -1035,18 +1162,22 @@ const LogisticsTracking: React.FC = () => {
             <Col flex="auto">
               <div style={{ fontSize: '12px', color: '#666' }}>
                 {currentPoint ? 
-                  `时间：${currentPoint.timestamp.toLocaleTimeString()} | 速度：${currentPoint.speed}km/h` :
-                  '无轨迹数据'
+                  `${currentPoint.timestamp.toLocaleTimeString()} | 速度：${currentPoint.speed}km/h` :
+                  '加载中...'
                 }
               </div>
             </Col>
           </Row>
           
-          <Progress 
-            percent={(currentTrackIndex / (trackPoints.length - 1)) * 100}
-            showInfo={false}
-            strokeColor="#1890ff"
-          />
+          {/* 进度条 */}
+          {trackPoints.length > 1 && (
+            <Progress 
+              percent={(currentTrackIndex / (trackPoints.length - 1)) * 100}
+              showInfo={true}
+              strokeColor="#1890ff"
+              format={() => `${currentTrackIndex + 1} / ${trackPoints.length}`}
+            />
+          )}
         </Space>
       </Card>
     );
@@ -1524,8 +1655,8 @@ const LogisticsTracking: React.FC = () => {
         </div>
       )}
 
-      {/* 轨迹回放控制（独立悬浮，在派送任务下方） */}
-      {/* {!leftPanelCollapsed && selectedVehicleId && trackPoints.length > 0 && (
+      {/* 轨迹回放控制面板（独立悬浮，不依赖左侧面板折叠状态） */}
+      {selectedVehicleId && trackPoints.length > 0 && userRole === 'admin' && (
         <div style={{
           position: 'absolute',
           left: 12,
@@ -1535,7 +1666,7 @@ const LogisticsTracking: React.FC = () => {
         }}>
           {renderPlaybackControls()}
         </div>
-      )} */}
+      )}
 
       {/* 右侧：配送时间线面板（点击任务后显示） */}
       {selectedTaskTimeline && deliveryNodes[selectedTaskTimeline] && (
@@ -1724,13 +1855,22 @@ const LogisticsTracking: React.FC = () => {
     // 切换到地图视图
     setCourierDetailTask(null);
     
-    // 设置车辆目标为快递站，并更新车辆状态为行驶中
+    // 先更新任务状态为 IN_TRANSIT，这样 updateVehiclePositions 才能处理
+    setDeliveryTasks(prevTasks =>
+      prevTasks.map(t =>
+        t.id === task.id
+          ? { ...t, status: DeliveryStatus.IN_TRANSIT }
+          : t
+      )
+    );
+    
+    // 设置车辆目标为快递站
     setVehicleTargets(prev => ({
       ...prev,
       [task.vehicleId]: task.pickupAddress
     }));
     
-    // 更新车辆状态为行驶中，开始移动（使用函数式更新确保获取最新状态）
+    // 更新车辆状态为行驶中，开始移动
     setVehicles(prevVehicles => {
       const updatedVehicles = prevVehicles.map(v =>
         v.id === task.vehicleId
@@ -2308,6 +2448,19 @@ const LogisticsTracking: React.FC = () => {
       </div>
 
       {userRole === 'admin' ? renderAdminView() : renderCourierView()}
+
+      {/* 轨迹回放控制面板 - 派送员视图也显示 */}
+      {selectedVehicleId && trackPoints.length > 0 && userRole === 'courier' && (
+        <div style={{
+          position: 'absolute',
+          left: 12,
+          bottom: 12,
+          zIndex: 2000,
+          width: 320,
+        }}>
+          {renderPlaybackControls()}
+        </div>
+      )}
 
     </div>
   );
