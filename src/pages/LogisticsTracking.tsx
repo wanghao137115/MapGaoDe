@@ -12,6 +12,7 @@ import {
   Statistic,     // 统计数值组件
   Progress,      // 进度条组件
   Divider,       // 分割线组件
+  Switch,        // 开关组件
   message,       // 消息提示
   Modal,         // 弹窗组件
   Form,          // 表单组件
@@ -237,11 +238,20 @@ const LogisticsTracking: React.FC = () => {
   const [vehiclePanelCollapsed, setVehiclePanelCollapsed] = useState<boolean>(false);
   const [taskPanelCollapsed, setTaskPanelCollapsed] = useState<boolean>(false);
 
+  // 派送员视图：是否自动确认取货/送货
+  const [autoConfirmEnabled, setAutoConfirmEnabled] = useState<boolean>(false);
+
   // 地图交互状态：跟踪用户是否手动操作了地图
   const [userHasInteractedWithMap, setUserHasInteractedWithMap] = useState<boolean>(false);
   const userHasInteractedWithMapRef = useRef<boolean>(false); // 使用 ref 存储，避免依赖问题
   const mapInstanceRef = useRef<any>(null); // 存储地图实例
   const isProgrammaticUpdateRef = useRef<boolean>(false); // 标记是否是程序自动更新
+
+  // 自动确认状态跟踪
+  const autoConfirmRef = useRef<{
+    pendingPickup: string | null;  // 待自动确认的取货任务ID
+    pendingDelivery: string | null; // 待自动确认的送货任务ID
+  }>({ pendingPickup: null, pendingDelivery: null });
 
   // 处理地图就绪，存储地图实例并监听用户交互
   const handleMapReady = useCallback((map: any) => {
@@ -1972,13 +1982,14 @@ const LogisticsTracking: React.FC = () => {
 
     // 从任务列表中查找当前的任务
     const courierTasks = deliveryTasks.filter(t => t.vehicleId === selectedCourierId);
-    
+
     // 检查是否有已分配的任务到达了快递站（取货中）
     const assignedTask = courierTasks.find(t => t.status === DeliveryStatus.ASSIGNED);
     if (assignedTask) {
       const distance = calculateDistance(courierVehicle.position, assignedTask.pickupAddress);
       if (distance <= 150 && courierVehicle.status !== VehicleStatus.PICKING_UP) {
-        // 到达快递站，更新状态为取货中
+        // 到达快递站
+        // 更新车辆状态为取货中
         setVehicles(prevVehicles =>
           prevVehicles.map(v =>
             v.id === selectedCourierId
@@ -1986,15 +1997,32 @@ const LogisticsTracking: React.FC = () => {
               : v
           )
         );
+
+        // 如果启用了自动确认，且没有待确认的任务，自动确认取货
+        if (autoConfirmEnabled && autoConfirmRef.current.pendingPickup !== assignedTask.id) {
+          console.log(`[Logistics] 自动确认取货：${assignedTask.id}`);
+          autoConfirmRef.current.pendingPickup = assignedTask.id;
+          // 延迟执行，避免状态更新冲突
+          setTimeout(() => {
+            handlePickupConfirm(assignedTask);
+            autoConfirmRef.current.pendingPickup = null;
+          }, 100);
+        }
+      } else if (distance > 150) {
+        // 离开快递站范围，重置自动确认状态
+        if (autoConfirmRef.current.pendingPickup === assignedTask.id) {
+          autoConfirmRef.current.pendingPickup = null;
+        }
       }
     }
-    
+
     // 检查是否有运输中的任务到达了收货点（送货中）
     const transitTask = courierTasks.find(t => t.status === DeliveryStatus.IN_TRANSIT);
     if (transitTask) {
       const distance = calculateDistance(courierVehicle.position, transitTask.deliveryAddress);
       if (distance <= 150 && courierVehicle.status !== VehicleStatus.DELIVERING_GOODS) {
-        // 到达收货点，更新状态为送货中
+        // 到达收货点
+        // 更新车辆状态为送货中
         setVehicles(prevVehicles =>
           prevVehicles.map(v =>
             v.id === selectedCourierId
@@ -2002,9 +2030,24 @@ const LogisticsTracking: React.FC = () => {
               : v
           )
         );
+
+        // 如果启用了自动确认，且没有待确认的任务，自动确认送货
+        if (autoConfirmEnabled && autoConfirmRef.current.pendingDelivery !== transitTask.id) {
+          console.log(`[Logistics] 自动确认送货：${transitTask.id}`);
+          autoConfirmRef.current.pendingDelivery = transitTask.id;
+          setTimeout(() => {
+            handleDeliveryConfirm(transitTask);
+            autoConfirmRef.current.pendingDelivery = null;
+          }, 100);
+        }
+      } else if (distance > 150) {
+        // 离开收货点范围，重置自动确认状态
+        if (autoConfirmRef.current.pendingDelivery === transitTask.id) {
+          autoConfirmRef.current.pendingDelivery = null;
+        }
       }
     }
-  }, [vehicles, selectedCourierId, deliveryTasks, calculateDistance]);
+  }, [vehicles, selectedCourierId, deliveryTasks, calculateDistance, autoConfirmEnabled, handlePickupConfirm, handleDeliveryConfirm]);
 
   // 派送员视图布局（静态展示当前派送员的任务和地图）
   const renderCourierView = () => {
@@ -2440,6 +2483,15 @@ const LogisticsTracking: React.FC = () => {
                     value: v.id,
                     label: `${v.driver}（${v.licensePlate}）`,
                   }))}
+                />
+                <Divider type="vertical" />
+                <span style={{ fontSize: 12, color: '#666' }}>自动确认：</span>
+                <Switch
+                  size="small"
+                  checked={autoConfirmEnabled}
+                  onChange={(checked) => setAutoConfirmEnabled(checked)}
+                  checkedChildren="开"
+                  unCheckedChildren="关"
                 />
               </>
             )}

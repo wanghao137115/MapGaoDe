@@ -72,18 +72,6 @@ const App: React.FC = () => {
         />
       </Sider>
       <Layout>
-        {/* <Header
-          style={{
-            background: '#fff',
-            padding: '0 24px',
-            display: 'flex',
-            alignItems: 'center',
-            borderBottom: '1px solid #f0f0f0',
-          }}
-        >
-          <h1 style={{ margin: 0, fontSize: 18 }}>React 智能地图应用平台</h1>
-        </Header> */}
-
         <Content style={{  background: '#fff'}}>
           <Routes>
             {/* 默认跳到基础地图页 */}
