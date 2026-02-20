@@ -6,11 +6,13 @@ import {
   CarOutlined,
   ShopOutlined,
   ToolOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import MapPlayground from '@/pages/MapPlayground';
 import LogisticsTracking from '@/pages/LogisticsTracking';
 import StoreLocator from '@/pages/StoreLocator';
 import MapTools from '@/pages/MapTools';
+import StressTest from '@/pages/StressTest';
 
 const { Header, Sider, Content } = Layout;
 
@@ -48,6 +50,11 @@ const App: React.FC = () => {
       icon: <ToolOutlined />,
       label: <Link to="/tools">地图工具</Link>,
     },
+    {
+      key: 'stress-test',
+      icon: <ThunderboltOutlined />,
+      label: <Link to="/stress-test">压力测试</Link>,
+    },
   ];
   
   return (
@@ -80,6 +87,7 @@ const App: React.FC = () => {
             <Route path="/logistics" element={<LogisticsTracking />} />
             <Route path="/stores" element={<StoreLocator />} />
             <Route path="/tools" element={<MapTools />} />
+            <Route path="/stress-test" element={<StressTest />} />
             {/* 简单 404 占位 */}
             <Route path="*" element={<div>页面不存在</div>} />
           </Routes>

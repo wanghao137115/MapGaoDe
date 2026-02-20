@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';  // React核心hooks
+import React, { useState, useCallback, useEffect, useRef, useDeferredValue } from 'react';  // React核心hooks
 import { 
   Card,          // 卡片容器组件
   Row,           // 栅格行组件  
@@ -44,7 +44,9 @@ import RouteLayer from '@/components/Map/RouteLayer';      // 路径层组件
 import RoutePlanningForm, { RoutePlanningParams } from '@/components/Map/RoutePlanningForm'; // 路径规划表单
 import RouteDetailsPanel from '@/components/Map/RouteDetailsPanel'; // 路径详情面板
 import PlaceSearch from '@/components/Map/PlaceSearch';    // 地点搜索组件
+import TaskList from '@/components/VirtualTaskList';          // 优化任务列表
 import { useGeolocation } from '@/hooks/useGeolocation';    // 地理位置hook
+import { throttle } from '@/utils/debounce';               // 防抖节流工具
 
 import type { MapPosition, Marker } from '@/types';         // 类型定义
 
@@ -183,6 +185,9 @@ const LogisticsTracking: React.FC = () => {
       temperature: 21
     }
   ]);
+
+  // 使用 useDeferredValue 延迟车辆状态更新，优先保证地图交互流畅
+  const vehiclesDeferred = useDeferredValue(vehicles);
 
   // 配送任务列表状态 - 一开始没有任务（只有确认派送后才出现）
   const [deliveryTasks, setDeliveryTasks] = useState<DeliveryTask[]>([]);
@@ -1652,14 +1657,14 @@ const LogisticsTracking: React.FC = () => {
             }
             bodyStyle={{ flex: 1, overflow: 'auto', padding: '12px' }}
           >
-            <div style={{ height: '100%', overflow: 'auto' }}>
-              {deliveryTasks.length === 0 ? (
-                <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>
-                  暂无任务，点击车辆卡片上的"派送"按钮创建任务
-                </div>
-              ) : (
-                deliveryTasks.map(renderDeliveryTask)
-              )}
+            <div style={{ height: '100%', overflow: 'hidden' }}>
+              <TaskList
+                tasks={deliveryTasks}
+                vehicles={vehicles}
+                selectedTaskTimeline={selectedTaskTimeline}
+                onTaskClick={handleTaskClick}
+                height={350}
+              />
             </div>
           </Card>
         </div>

@@ -27,9 +27,7 @@ export default defineConfig({
     // 为 Worker 生成独立的 chunk
     rollupOptions: {
       output: {
-        manualChunks: {
-          worker: ['src/workers/**'],
-        },
+        // Worker 文件会被自动打包，无需手动配置 manualChunks
       },
     },
   },
