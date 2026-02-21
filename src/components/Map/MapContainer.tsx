@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import { loadAMap, getAMapLoadStatus, MapLoadStatus } from '@/services/map';
+import { debounce } from '@/utils/debounce';
 import type { MapPosition, Marker } from '@/types';
 import MarkerLayer from './MarkerLayer';
 
@@ -157,6 +158,23 @@ const MapContainer: React.FC<MapContainerProps> = ({
             }
         }
     }, []);
+
+    // Window resize 防抖处理 - 地图窗口大小变化时重新调整
+    useEffect(() => {
+        if (!mapInstanceRef.current) return;
+
+        const handleResize = debounce(() => {
+            if (mapInstanceRef.current) {
+                mapInstanceRef.current.resize();
+            }
+        }, 200);
+
+        window.addEventListener('resize', handleResize);
+        return () => {
+            window.removeEventListener('resize', handleResize);
+        };
+    }, []);
+
     // 响应控件配置变化 - 动态显示/隐藏控件
     useEffect(() => {
         if (mapInstanceRef.current) {
