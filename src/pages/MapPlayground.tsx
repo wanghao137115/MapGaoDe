@@ -21,6 +21,7 @@ import { useRouteHistory } from "@/hooks/useRouteHistory";
 import { useCityWeather } from "@/hooks/useCityWeather";
 import { useMapTools } from "@/hooks/useMapTools";
 import { useRoutePlanning } from "@/hooks/useRoutePlanning";
+import { usePerformanceReport } from "@/hooks/usePerformance";
 import type { MapPosition, Marker } from "@/types";
 import type { RouteServiceResult } from "@/types";
 import { RouteServiceStatus, RouteStrategy } from "@/types";
@@ -114,6 +115,15 @@ const MapPlayground: React.FC = () => {
   const cityWeather = useCityWeather('深圳');
   const mapTools = useMapTools();
   const routePlanning = useRoutePlanning();
+
+  // 性能监控
+  const { report: perfReport, isMonitoring } = usePerformanceReport({
+    debug: true,
+    onReport: (report) => {
+      // 可以在这里将性能数据上报到服务器
+      console.log('[性能报告]', report);
+    },
+  });
 
   // 路线规划面板状态
   const [showRoutePanel, setShowRoutePanel] = useState<boolean>(false);

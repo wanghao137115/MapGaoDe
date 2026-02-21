@@ -1,4 +1,6 @@
 // 地图相关工具函数
+// 性能监控工具
+export * from './performance';
 
 import type { MapPosition } from '@/types';
 
