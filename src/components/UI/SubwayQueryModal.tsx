@@ -272,21 +272,27 @@ const SubwayQueryModal: React.FC<SubwayQueryModalProps> = ({ visible, onClose })
           const AMap = (window as any).AMap;
           const geocoder = new AMap.Geocoder();
 
-          const result = await new Promise<any>((resolve, reject) => {
-            geocoder.getAddress([longitude, latitude], (status: string, result: any) => {
-              if (status === 'complete' && result.info === 'OK') {
-                resolve(result);
-              } else {
-                reject(new Error('逆地理编码失败'));
-              }
+          try {
+            const result = await new Promise<any>((resolve, reject) => {
+              geocoder.getAddress([longitude, latitude], (status: string, result: any) => {
+                if (status === 'complete' && result.info === 'OK') {
+                  resolve(result);
+                } else {
+                  // 逆地理编码失败时使用默认值，不阻塞功能
+                  console.warn('逆地理编码失败，使用默认城市:', result?.info);
+                  resolve(null);
+                }
+              });
             });
-          });
 
-          if (result.regeocode && result.regeocode.addressComponent) {
-            const city = result.regeocode.addressComponent.city ||
-                        result.regeocode.addressComponent.province;
-            setCurrentCity(city);
-            console.log('📍 定位成功，当前城市:', city);
+            if (result?.regeocode?.addressComponent) {
+              const city = result.regeocode.addressComponent.city || 
+                          result.regeocode.addressComponent.province;
+              setCurrentCity(city);
+              console.log('📍 定位成功，当前城市:', city);
+            }
+          } catch (geocodeError) {
+            console.warn('逆地理编码出错，使用默认城市:', geocodeError);
           }
         }
       } else {

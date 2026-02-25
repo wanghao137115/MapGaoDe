@@ -2,7 +2,58 @@ import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Card, Space, Switch, Divider, Button, message, Row, Col, Typography, Tag, Badge, Collapse, CollapseProps, Checkbox, Popover, Input, Select, Slider } from "antd";
 import { EnvironmentOutlined, FullscreenOutlined, GlobalOutlined, CarOutlined, RadarChartOutlined, AimOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
 import MapContainer from "@/components/Map/MapContainer";
+import HybridMap from "@/components/Map/HybridMap";
+import { useMapContext, useMap, useMapReady } from "@/services/map";
 import MarkerLayer from "@/components/Map/MarkerLayer";
+
+/**
+ * 示例组件：展示如何使用新的 Hook 获取地图实例
+ * 这个组件可以在任何子组件中使用 useMapContext、useMap 或 useMapReady
+ */
+const MapHooksDemo: React.FC = () => {
+  const { map, isReady, isLoading, error, setCenter, setZoom } = useMapContext();
+  const simpleMap = useMap(); // 简化版：只返回地图实例
+  const mapIsReady = useMapReady(); // 简化版：只返回是否就绪
+
+  const handleCenterToBeijing = () => {
+    setCenter({ lng: 116.3974, lat: 39.9093 });
+  };
+
+  const handleZoomIn = () => {
+    const currentZoom = simpleMap?.getZoom() || 10;
+    setZoom(Math.min(currentZoom + 1, 18));
+  };
+
+  const handleZoomOut = () => {
+    const currentZoom = simpleMap?.getZoom() || 10;
+    setZoom(Math.max(currentZoom - 1, 3));
+  };
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 10,
+      right: 10,
+      background: 'rgba(255,255,255,0.95)',
+      padding: '12px',
+      borderRadius: '8px',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+      zIndex: 1000,
+      fontSize: '12px',
+      maxWidth: '200px'
+    }}>
+      <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>🗺️ 新架构 Hook 示例</div>
+      <div>状态: {isLoading ? '加载中' : error ? '错误' : isReady ? '就绪' : '未就绪'}</div>
+      <div>地图: {map ? '✓ 实例可用' : '✗ 无实例'}</div>
+      <div>useMapReady: {mapIsReady ? '✓' : '✗'}</div>
+      <div style={{ marginTop: '8px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+        <Button size="small" onClick={handleCenterToBeijing}>北京</Button>
+        <Button size="small" onClick={handleZoomIn}>+</Button>
+        <Button size="small" onClick={handleZoomOut}>-</Button>
+      </div>
+    </div>
+  );
+};
 import MarkerList from "@/components/Map/MarkerList";
 import MarkerSearch from "@/components/Map/MarkerSearch";
 import PlaceSearch from "@/components/Map/PlaceSearch";
@@ -1554,9 +1605,9 @@ const MapPlayground: React.FC = () => {
               onSetTrafficHour={mapTools.setTrafficHour}
             />
 
-            {/* 地图主体（原有地图渲染） */}
+            {/* 地图主体（使用新的 HybridMap 架构） */}
             <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-              <MapContainer
+              <HybridMap
                 center={mapCenter}
                 zoom={zoom}
                 mapType={mapType}
@@ -1655,7 +1706,10 @@ const MapPlayground: React.FC = () => {
                     }}
                   />
                 )}
-              </MapContainer>
+
+                {/* 示例：使用新的 Hook 获取地图实例（开发模式显示） */}
+                {import.meta.env.DEV && <MapHooksDemo />}
+              </HybridMap>
 
               {/* 在此区域搜索按钮：位于地图底部中间，距离底部约 50px */}
               {showCategorySheet && showSearchInArea && (

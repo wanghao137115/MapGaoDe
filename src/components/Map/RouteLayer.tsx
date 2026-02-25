@@ -1,21 +1,26 @@
 // src/components/Map/RouteLayer.tsx
 // 路径绘制组件 - 在地图上绘制规划出的路线
+// 使用 MapManager 获取地图实例
 
 import React, { useEffect, useRef, useState } from 'react';
 import type { MapPosition } from '@/types';
+import { mapManager } from '@/services/map';
 
 // 组件Props接口定义
 interface RouteLayerProps {
   polyline: MapPosition[];        // 路径坐标点数组
   mode: 'driving' | 'walking';    // 路径模式（决定颜色）
   visible: boolean;               // 是否显示路径
+  /** 地图实例（可选，如果不传则自动获取） */
+  map?: any;
 }
 
 // 主组件定义 - 函数式组件，不渲染任何DOM，只负责绘制路径
 const RouteLayer: React.FC<RouteLayerProps> = ({
   polyline,   // 路径坐标点
   mode,       // 路径模式
-  visible     // 是否可见
+  visible,    // 是否可见
+  map         // 可选的地图实例
 }) => {
   // 使用useRef保存路径覆盖物引用，方便后续清理
   const polylineRef = useRef<any>(null);
@@ -24,27 +29,27 @@ const RouteLayer: React.FC<RouteLayerProps> = ({
 
   // 使用useEffect监听props变化，重新绘制路径
   useEffect(() => {
-    // 获取地图实例（通过全局变量）
-    const map = (window as any).currentMap;
+    // 使用传入的地图实例或从 MapManager 获取
+    const mapInstance = map || mapManager.getCurrentMap();
     const AMap = (window as any).AMap;
 
     // 如果地图还没有准备好，但有路径数据，尝试等待一下
-    if (!map && visible && polyline && polyline.length > 0) {
+    if (!mapInstance && visible && polyline && polyline.length > 0) {
       const timer = setTimeout(() => {
-        const retryMap = (window as any).currentMap;
+        const retryMap = map || mapManager.getCurrentMap();
         const retryAMap = (window as any).AMap;
         if (retryMap && retryAMap) {
-          // 重新触发effect
+          // 重新触发effect - 通过依赖变化
         }
       }, 1000);
       return () => clearTimeout(timer);
     }
 
     // 条件检查：地图不存在、不可见、无坐标点时清除路径
-    if (!map || !AMap || !visible || !polyline || polyline.length === 0) {
+    if (!mapInstance || !AMap || !visible || !polyline || polyline.length === 0) {
       // 清除现有路径
       if (polylineRef.current) {
-        map?.remove(polylineRef.current);  // 从地图移除覆盖物
+        mapInstance?.remove(polylineRef.current);  // 从地图移除覆盖物
         polylineRef.current = null;       // 清空引用
       }
       return;
@@ -53,7 +58,7 @@ const RouteLayer: React.FC<RouteLayerProps> = ({
     try {
       // 清除现有路径（如果有）
       if (polylineRef.current) {
-        map.remove(polylineRef.current);
+        mapInstance.remove(polylineRef.current);
       }
 
       // 将应用坐标格式转换为AMap坐标格式
@@ -81,24 +86,23 @@ const RouteLayer: React.FC<RouteLayerProps> = ({
       const newPolyline = new AMap.Polyline(polylineOptions);
 
       // 将路径添加到地图
-      map.add(newPolyline);
+      mapInstance.add(newPolyline);
 
       // 保存覆盖物引用
       polylineRef.current = newPolyline;
 
       // 自动调整地图视野以显示完整路径
-      map.setFitView([newPolyline], {
+      mapInstance.setFitView([newPolyline], {
         padding: [50, 50, 50, 50]  // 上下左右边距（像素）
       });
 
     } catch (error) {
-      // 路径绘制失败时的错误处理
-      // 可以在这里显示用户友好的错误提示
+      console.error('[RouteLayer] 路径绘制失败:', error);
     }
 
     // 清理函数：组件卸载或依赖变化时执行
     return () => {
-      const currentMap = (window as any).currentMap;
+      const currentMap = map || mapManager.getCurrentMap();
       if (polylineRef.current && currentMap) {
         currentMap.remove(polylineRef.current);  // 从地图移除覆盖物
         polylineRef.current = null;       // 清空引用
@@ -106,7 +110,7 @@ const RouteLayer: React.FC<RouteLayerProps> = ({
     };
 
     // 依赖数组：当这些值变化时重新执行effect
-  }, [polyline, mode, visible]);
+  }, [polyline, mode, visible, map]);
 
   // 组件不渲染任何DOM元素，只负责副作用（绘制路径）
   return null;
