@@ -8,7 +8,7 @@ import './styles/global.css';
 import { initMonitoring, MonitoringErrorBoundary } from './monitoring';
 
 // 初始化监控系统
-initMonitoring();
+  initMonitoring();
 
 // 暴露测试函数到全局，用于测试 ARMS 错误上报
 if (import.meta.env.DEV) {
