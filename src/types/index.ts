@@ -145,3 +145,48 @@ export interface GeolocationState {
   loading: boolean;
   error: GeolocationErrorType | null;
 }
+
+// 配送任务状态枚举
+export enum DeliveryStatus {
+  PENDING = 'pending',        // 待分配
+  ASSIGNED = 'assigned',       // 已分配
+  IN_TRANSIT = 'in_transit',  // 运输中
+  DELIVERED = 'delivered',    // 已送达
+  CANCELLED = 'cancelled',    // 已取消
+}
+
+// 配送优先级枚举
+export enum DeliveryPriority {
+  LOW = 'low',
+  NORMAL = 'normal',
+  HIGH = 'high',
+  URGENT = 'urgent',
+}
+
+// 配送任务类型
+export interface DeliveryTask {
+  id: string;
+  orderId?: string;           // 订单ID
+  status: DeliveryStatus;
+  priority: DeliveryPriority;
+  vehicleId?: string;         // 关联的车辆ID
+  origin: MapPosition;
+  destination: MapPosition;
+  estimatedDeliveryTime?: Date;
+  estimatedArrival?: Date;    // 预计送达时间（用于显示）
+  actualDeliveryTime?: Date;
+  customerName?: string;
+  customerPhone?: string;
+  notes?: string;
+}
+
+// 车辆类型
+export interface Vehicle {
+  id: string;
+  name: string;
+  type: string;
+  capacity: number;
+  licensePlate?: string;      // 车牌号
+  currentPosition?: MapPosition;
+  status?: 'available' | 'busy' | 'maintenance';
+}

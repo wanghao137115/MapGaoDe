@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, memo } from "react";
 import type { Marker } from "@/types";
 import type { MarkerUpdate, IconConfig } from "@/workers/MarkerWorker";
+import { mapManager } from "@/services/map";
 
 // ==================== 配置 ====================
 
@@ -113,7 +114,7 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
     worker.onmessage = (event: MessageEvent<{ updates: MarkerUpdate[], timestamp: number }>) => {
       const { updates, timestamp } = event.data;
       const AMap = (window as any).AMap;
-      const map = (window as any).currentMap;
+      const map = mapManager.getCurrentMap();
 
       // 调试日志
       const vehicleUpdates = updates.filter((u: MarkerUpdate) => u.type === 'vehicle');
@@ -324,7 +325,7 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
     }>) => {
       const { type, vehicleId, position } = event.data;
       const AMap = (window as any).AMap;
-      const map = (window as any).currentMap;
+      const map = mapManager.getCurrentMap();
 
       if (!AMap || !map) return;
 
@@ -357,7 +358,7 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
 
   useEffect(() => {
     const checkMapReady = () => {
-      if ((window as any).currentMap && (window as any).AMap) {
+      if (mapManager.getCurrentMap() && (window as any).AMap) {
         setMapReady(true);
       } else {
         setMapReady(false);
@@ -376,7 +377,7 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
     if (!mapReady || !workerRef.current) return;
 
         const AMap = (window as any).AMap;
-        const map = (window as any).currentMap;
+        const map = mapManager.getCurrentMap();
     if (!AMap || !map) return;
 
     const now = Date.now();
@@ -420,7 +421,7 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
   useEffect(() => {
     if (!mapReady) return;
 
-    const map = (window as any).currentMap;
+    const map = mapManager.getCurrentMap();
     if (!map) return;
 
     // 拖拽开始
@@ -476,7 +477,7 @@ const MarkerLayer: React.FC<MarkerLayerProps> = ({
       animatingVehiclesRef.current.clear();
 
       // 清理地图标记
-      const map = (window as any).currentMap;
+      const map = mapManager.getCurrentMap();
         Object.values(markersRef.current).forEach((marker: any) => {
         if (marker && map && typeof map.remove === 'function') {
                 try {

@@ -1,5 +1,5 @@
 import React, { useCallback, memo } from 'react';
-import type { DeliveryTask, Vehicle, DeliveryStatus, DeliveryPriority } from '../types';
+import { DeliveryTask, Vehicle, DeliveryStatus, DeliveryPriority } from '../types';
 import { Card, Row, Tag, Space } from 'antd';
 
 /** 获取配送状态信息 */
@@ -54,7 +54,7 @@ const TaskCard = memo<{
             客户：{task.customerName} | 车辆：{vehicle?.licensePlate || '未分配'}
           </div>
           <div style={{ fontSize: '12px', color: '#999' }}>
-            预计送达：{task.estimatedArrival.toLocaleTimeString()}
+            预计送达：{task.estimatedArrival ? task.estimatedArrival.toLocaleTimeString() : '未知'}
           </div>
         </Space>
       </Row>

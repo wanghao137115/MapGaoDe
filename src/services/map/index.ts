@@ -849,6 +849,15 @@ export async function planElectricRoute(
   return service.planRidingRouteWebService({ origin, destination });
 }
 
+// 导出 MapManager
+export { mapManager } from './MapManager';
+export { MapManager } from './MapManager';
+export type { MapOptions, MapInstance, MapEventHandler } from './MapManager';
+
+// 导出 MapContext 和 Hooks
+export { MapProvider, useMapContext, useMap, useMapReady } from './MapContext';
+export type { MapContextType } from './MapContext';
+
 
 
 
