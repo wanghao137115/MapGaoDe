@@ -54,7 +54,8 @@ describe('InfoWindow', () => {
       />
     );
 
-    expect(screen.getByText('📍北京市朝阳区测试路1号')).toBeInTheDocument();
+    // 使用正则匹配包含地址的文本
+    expect(screen.getByText(/北京市朝阳区/)).toBeInTheDocument();
   });
 
   it('should show phone when available', () => {

@@ -71,6 +71,198 @@ src/
 3. **事件驱动**：通过自定义事件或 Zustand 状态来同步地图状态变化
 4. **条件渲染**：确保地图 DOM 节点存在后再初始化 AMap
 
+**自动化测试方案：**
+
+如果时间允许，我会为这个解耦方案搭建完整的自动化测试：
+
+**1. 测试框架选型：Vitest + React Testing Library**
+
+```bash
+npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom
+```
+
+**2. MapManager 单元测试**
+
+```typescript
+// __tests__/MapManager.test.ts
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { MapManager } from '../src/services/map/MapManager';
+
+describe('MapManager', () => {
+  let mapManager: MapManager;
+  
+  beforeEach(() => {
+    // 每次测试前重置单例
+    mapManager = MapManager.getInstance();
+    mapManager.clear(); // 清理所有地图实例
+  });
+  
+  it('应该返回单例实例', () => {
+    const instance1 = MapManager.getInstance();
+    const instance2 = MapManager.getInstance();
+    expect(instance1).toBe(instance2);
+  });
+  
+  it('应该正确创建和获取地图实例', () => {
+    // Mock AMap
+    const mockMap = { setCenter: vi.fn(), add: vi.fn() };
+    (window as any).AMap = {
+      Map: vi.fn(() => mockMap)
+    };
+    
+    const container = document.createElement('div');
+    const map = mapManager.createMap(container, {
+      center: [116.397428, 39.90923],
+      zoom: 12
+    }, 'test-map');
+    
+    expect(map).toBe(mockMap);
+    expect(mapManager.getMap('test-map')).toBe(mockMap);
+    expect(mapManager.getCurrentMap()).toBe(mockMap);
+  });
+  
+  it('应该正确销毁地图实例', () => {
+    const mockMap = { destroy: vi.fn(), remove: vi.fn() };
+    (window as any).AMap = { Map: vi.fn(() => mockMap) };
+    
+    const container = document.createElement('div');
+    mapManager.createMap(container, { center: [0, 0], zoom: 10 }, 'test');
+    mapManager.destroyMap('test');
+    
+    expect(mockMap.destroy).toHaveBeenCalled();
+    expect(mapManager.getMap('test')).toBeNull();
+  });
+});
+```
+
+**3. useMap Hook 测试**
+
+```typescript
+// __tests__/useMap.test.tsx
+import { renderHook, act } from '@testing-library/react';
+import { MapProvider, useMap } from '../src/hooks/useMap';
+import { MapManager } from '../src/services/map/MapManager';
+
+const wrapper = ({ children }) => (
+  <MapProvider>{children}</MapProvider>
+);
+
+describe('useMap', () => {
+  it('应该在 MapProvider 外抛出错误', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => renderHook(() => useMap())).toThrow('useMap must be used within MapProvider');
+    consoleError.mockRestore();
+  });
+  
+  it('应该能获取到地图实例', () => {
+    const { result } = renderHook(() => useMap(), { wrapper });
+    // 等待地图加载完成
+    expect(result.current.map).toBeDefined();
+  });
+});
+```
+
+**4. 组件集成测试（Mock AMap）**
+
+```typescript
+// __tests__/RouteLayer.test.tsx
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MapProvider } from '../src/services/map/MapContext';
+import RouteLayer from '../src/components/Map/RouteLayer';
+
+// Mock AMap
+vi.mock('../src/services/map', async () => {
+  const actual = await vi.importActual('../src/services/map');
+  return {
+    ...actual,
+    loadAMap: vi.fn().mockResolvedValue(true)
+  };
+});
+
+// Mock AMap 全局对象
+beforeEach(() => {
+  const mockPolyline = {
+    setPath: vi.fn(),
+    add: vi.fn(),
+    remove: vi.fn()
+  };
+  
+  const mockMap = {
+    add: vi.fn(),
+    remove: vi.fn(),
+    setFitView: vi.fn()
+  };
+  
+  (window as any).AMap = {
+    Map: vi.fn(() => mockMap),
+    Polyline: vi.fn(() => mockPolyline),
+    LngLat: vi.fn((lng, lat) => ({ lng, lat }))
+  };
+});
+
+describe('RouteLayer', () => {
+  it('应该正确渲染路线', async () => {
+    const polyline = [
+      { lng: 116.397428, lat: 39.90923 },
+      { lng: 116.487428, lat: 39.91923 }
+    ];
+    
+    render(
+      <MapProvider>
+        <RouteLayer polyline={polyline} mode="driving" />
+      </MapProvider>
+    );
+    
+    // 验证 Polyline 被创建
+    await waitFor(() => {
+      expect(window.AMap.Polyline).toHaveBeenCalled();
+    });
+  });
+});
+```
+
+**5. 测试检查清单**
+
+| 测试类型 | 覆盖内容 | 测试方法 |
+|----------|----------|----------|
+| 单元测试 | MapManager 单例、创建、销毁 | Vitest |
+| Hook 测试 | useMap 边界条件 | @testing-library/react |
+| 组件测试 | RouteLayer 渲染 | @testing-library/react |
+| 集成测试 | 完整业务流程 | 人工 + E2E（Playwright）|
+
+**6. CI/CD 集成**
+
+```yaml
+# .github/workflows/test.yml
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - run: npm ci
+      - run: npm run test:unit
+      - run: npm run test:ui
+```
+
+> “这样一套测试体系建起来后，每次代码变更都会自动跑测试，能大大降低回归bug的概率，也是面试中的加分项。”
+
+---
+
+### 面试话术：为什么当时没做自动化测试
+
+> “坦诚说，这个是后期优化项。如果重来一次，我会：
+> 1. 先用 Vitest 写 MapManager 的单元测试
+> 2. 用 @testing-library/react 测关键组件
+> 3. 引入 GitHub Actions 做 CI
+
+> 当时主要是赶工期，但这确实是需要补齐的地方。”
+
 ---
 
 ## 二、高德地图相关
