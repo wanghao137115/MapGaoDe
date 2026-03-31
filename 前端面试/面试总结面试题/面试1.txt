@@ -1,0 +1,128 @@
+1. 为什么Vue2没有办法做数据劫持
+Vue2 使用 Object.defineProperty 来实现数据响应式，但存在以下限制：
+无法监听对象属性的增加/删除：Object.defineProperty 只能劫持已存在的属性，对于新增或删除的属性无能为力
+数组索引问题：无法直接监听数组索引的变化（所以 Vue2 重写了 push、pop 等数组方法）
+递归性能问题：需要递归遍历所有数据属性
+无法拦截 apply、construct 等操作
+Vue3 使用 Proxy 完美解决了这些问题，可以监听对象的任何变化。
+
+
+2. 那些数组可以修改原数组，那些返回新数组
+修改原数组的方法（会改变原数组）：
+push() / pop() / shift() / unshift()
+splice()
+sort()
+reverse()
+fill()
+copyWithin()
+返回新数组的方法（不改变原数组）：
+map()
+filter()
+concat()
+slice()
+flat() / flatMap()
+
+
+3. Redux和Pinia区别在哪
+特性	Redux	Pinia
+所属框架	React（但也可用于其他框架）	Vue3 官方推荐
+代码量	较多（action、reducer、dispatch）	简洁直观
+状态管理	不可变（immutable）	可变（mutable）
+Store	单个 Store	支持多个 Store
+TypeScript 支持	需要额外配置	原生 TypeScript 支持
+异步处理	需要中间件（redux-thunk/saga）	直接在 action 中处理
+
+
+4. TS怎么定义Promise
+// 定义 Promise 类型const promise: Promise<string> = new Promise((resolve, reject) => {  resolve('成功')})// 泛型指定 resolved value 的类型const fetchData = (): Promise<Response> => {  return fetch('/api').then(res => res.json())}
+
+
+5. TS怎么定义setTimeout的返回值
+// 浏览器环境const timerId: number = setTimeout(() => {  console.log('hello')}, 1000)// 使用 ReturnType 推导const timerId2: ReturnType<typeof setTimeout> = setTimeout(() => {}, 1000)// 清除定时器clearTimeout(timerId)
+
+
+6. TS中怎么定义闭包的返回值
+// 定义返回函数的类型const createCounter = (): (() => number) => {  let count = 0  return () => ++count}// 使用泛型定义更灵活的返回类型function createHandler<T>(): () => T {  return () => {    return {} as T  }}// 定义返回对象的闭包const createConfig = (): { get: () => string; set: (val: string) => void } => {  let value = 'default'  return {    get: () => value,    set: (val: string) => { value = val }  }}
+
+
+7. 表单上传用的什么协议
+multipart/form-data
+这是 HTTP 协议中用于文件上传的 Content-Type，会将数据分割为多个部分，每个部分包含一个头部信息和对应的内容。
+
+
+8. HTTPS可以访问HTTP的资源吗
+技术上可以，但现代浏览器会阻止。
+这就是所谓的 混合内容（Mixed Content） 问题：
+现代浏览器会阻止 HTTPS 页面中的 HTTP 资源请求
+这主要是为了安全，防止中间人攻击
+解决方案：将 HTTP 资源升级为 HTTPS
+
+
+9. 浏览器为什么不允许跨域
+这是浏览器的 同源策略（Same-Origin Policy） 安全机制：
+防止 CSRF 攻击：恶意网站无法利用用户已登录的状态向其他网站发起请求
+防止 XSS：限制脚本访问不同源的数据
+保护用户数据：防止敏感信息被恶意网站读取
+只有满足协议+域名+端口三者相同才是同源。
+
+
+10. 请求一个图片里面会有token吗
+默认不会。
+只有当请求显式配置了 credentials（凭证）时才会包含：
+设置 withCredentials: true
+或者在请求头中手动添加 Authorization: Bearer token
+或者 Cookie 被设置为允许跨站访问
+图片等静态资源请求默认不会携带认证信息。
+
+
+11. 怎么指定一个图片为强缓存
+通过 HTTP 响应头设置：
+# 强缓存（不发送请求到服务器）Cache-Control: public, max-age=31536000, immutable# 或者使用 Expires（已不推荐）Expires: Sat, 28 Feb 2027 00:00:00 GMT
+关键点：
+public：允许 CDN 等中间缓存
+max-age：缓存有效时间（秒）
+immutable：告诉浏览器该资源永不变，永远用缓存
+返回304表示不需要修改，继续使用缓存 使用200表示有修改成功获取数据
+
+
+
+12.为什么Redux中修改数据要使用扩展运算符 {...data}
+核心原因：Redux要求状态是不可变的（Immutable）
+1. 配合时间旅行调试
+Redux DevTools 可以记录每一次 state 的变化，允许你"回到过去"查看任意状态。这只有当每次返回的是新对象才能实现：
+// ❌ 错误：直接修改原对象state.name = 'Tom'return state// ✅ 正确：返回新对象return { ...state, name: 'Tom' }
+2. 便于 React 性能优化
+React 通过引用比较（===）来判断数据是否变化：
+// 如果返回同一个引用，React 认为没有变化，不会重新渲染const oldState = { name: 'Jack' }const newState = oldState  // 同一个引用，React 不会重新渲染// 使用扩展运算符创建新对象const newState = { ...oldState, name: 'Tom' }  // 新引用，React 会重新渲染
+3. 保证数据可预测性
+避免意外的副作用
+更容易追踪状态变化
+并发编程中避免竞态条件
+实际例子
+// ❌ 错误写法case 'UPDATE_NAME':  state.user.name = action.payload  return state// ✅ 正确写法case 'UPDATE_NAME':  return {    ...state,    user: {      ...state.user,      name: action.payload    }  }
+现代方案：使用 Immer
+Redux 官方推荐使用 Immer 库，可以"可变式"地修改数据：
+import { produce } from 'immer'case 'UPDATE_NAME':  return produce(state, draft => {    draft.user.name = action.payload  // 看起来在修改，实际生成新对象  })
+这样既保持代码简洁，又遵循不可变原则。
+
+13. TS中泛型和type的区别
+type - 类型别名，给类型起别名
+泛型 - 创建可复用组件，支持多种类型
+type: 静态定义，编译时确定
+泛型: 使用时指定类型，运行时分类型
+
+14. 为什么要设计let和const
+var的问题：函数作用域，存在变量提升
+let: 块级作用域，解决全局污染
+const: 语义化，防止意外修改，编译器可优化
+
+15. useEffect死循环怎么排查
+1) 查看浏览器Performance面板观察无限渲染
+2) 检查依赖数组 - 对象/数组作为依赖会每次触发
+3) 常见坑：setState在effect里、new Date()、useState返回的函数
+4) 加console.log调试
+
+16. Promise.all是按顺序执行的吗
+不是按顺序，是并发执行，结果按原数组顺序返回
+同时发起所有Promise，等待最慢的那个完成
+
