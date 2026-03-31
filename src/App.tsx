@@ -13,8 +13,15 @@ import LogisticsTracking from '@/pages/LogisticsTracking';
 import StoreLocator from '@/pages/StoreLocator';
 import MapTools from '@/pages/MapTools';
 import StressTest from '@/pages/StressTest';
+import { useUsageStats } from '@/hooks/useUsageStats';
 
 const { Header, Sider, Content } = Layout;
+
+// 使用统计组件 - 静默收集数据
+const StatsCollector: React.FC = () => {
+  useUsageStats();
+  return null;
+};
 
 const useSelectedKey = () => {
   const location = useLocation();
@@ -59,6 +66,8 @@ const App: React.FC = () => {
   
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      {/* 统计收集器 - 静默运行 */}
+      <StatsCollector />
       <Sider breakpoint='lg' collapsedWidth='0'>
         <div 
             style={{

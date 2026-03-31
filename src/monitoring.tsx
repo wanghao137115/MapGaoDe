@@ -136,6 +136,11 @@ function logMetric(name: string, metric: any) {
   
   console.log(`📊 Web Vital - ${name}:`, value, metric.id);
   
+  // 广播给 useUsageStats
+  window.dispatchEvent(new CustomEvent('web-vitals', {
+    detail: { name, value }
+  }));
+  
   // 上报到 ARMS 作为自定义测速点
   if (armsInstance) {
     // 将指标名称映射到 ARMS 的 speed 点位

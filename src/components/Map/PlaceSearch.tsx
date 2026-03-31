@@ -3,6 +3,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Input, List, Spin, message, Space, Typography } from 'antd';
 import { SearchOutlined, EnvironmentOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import type { MapPosition } from '@/types';
+import { globalUsageStats } from '@/hooks/useUsageStats';
 
 const { Text } = Typography;
 
@@ -65,6 +66,7 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
       return;
     }
 
+    const startTime = performance.now(); // 开始计时
     setLoading(true);
     try {
       const params = new URLSearchParams({
@@ -81,6 +83,10 @@ const PlaceSearch: React.FC<PlaceSearchProps> = ({
 
       const response = await fetch(`https://restapi.amap.com/v3/place/text?${params}`);
       const data = await response.json();
+
+      // 记录搜索耗时
+      const responseTime = Math.round(performance.now() - startTime);
+      globalUsageStats.recordSearch(responseTime, false);
 
       if (data.status === '1' && data.pois && Array.isArray(data.pois)) {
         const results: PlaceResult[] = data.pois.map((poi: any) => ({
