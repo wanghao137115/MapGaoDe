@@ -7,12 +7,14 @@ import {
   ShopOutlined,
   ToolOutlined,
   ThunderboltOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import MapPlayground from '@/pages/MapPlayground';
 import LogisticsTracking from '@/pages/LogisticsTracking';
 import StoreLocator from '@/pages/StoreLocator';
 import MapTools from '@/pages/MapTools';
 import StressTest from '@/pages/StressTest';
+import WebGISDemo from '@/pages/WebGISDemo';
 import { useUsageStats } from '@/hooks/useUsageStats';
 
 const { Header, Sider, Content } = Layout;
@@ -29,6 +31,7 @@ const useSelectedKey = () => {
   if (location.pathname.startsWith('/logistics')) return 'logistics';
   if (location.pathname.startsWith('/stores')) return 'stores';
   if (location.pathname.startsWith('/tools')) return 'tools';
+  if (location.pathname.startsWith('/webgis')) return 'webgis';
   return 'map';
 };
 
@@ -61,6 +64,11 @@ const App: React.FC = () => {
       key: 'stress-test',
       icon: <ThunderboltOutlined />,
       label: <Link to="/stress-test">压力测试</Link>,
+    },
+    {
+      key: 'webgis',
+      icon: <GlobalOutlined />,
+      label: <Link to="/webgis">WebGIS</Link>,
     },
   ];
   
@@ -97,6 +105,7 @@ const App: React.FC = () => {
             <Route path="/stores" element={<StoreLocator />} />
             <Route path="/tools" element={<MapTools />} />
             <Route path="/stress-test" element={<StressTest />} />
+            <Route path="/webgis" element={<WebGISDemo />} />
             {/* 简单 404 占位 */}
             <Route path="*" element={<div>页面不存在</div>} />
           </Routes>
